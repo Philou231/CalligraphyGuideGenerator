@@ -1,18 +1,13 @@
 """
-Calligraphy Guide Sheet Generator
----------------------------------
-A Windows-optimized Desktop Application to design and generate custom
-Calligraphy guide sheets in PostScript (.ps) format.
-
-Features:
-- High-DPI Awareness for crisp rendering on 4K/Windows displays.
-- Dynamic Object-Oriented Guidelines Engine (arbitrary horizontal lines & slants).
-- Live vector preview using Tkinter Canvas.
-- State persistence via embedded JSON "Ghost Metadata" in PostScript files.
-- Direct Windows printing.
-
-Author: Gemini Pro
-  Date: 2026-03-01
+Calligraphy Guide Sheet Generator - Pro Edition
+-----------------------------------------------
+Updates:
+- Per-row slants starting strictly at the left margin.
+- Individual line style controls (Width and Dash).
+- Auto-generated 'x' height markers.
+- Complete groups only, maximized to top margin.
+- Native Windows Print Dialog integration via Ghostscript.
+- Undo/Redo support and Zero-value crash protection.
 """
 
 import tkinter as tk
@@ -23,6 +18,7 @@ import json
 import os
 import re
 import ctypes
+import subprocess
 
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
@@ -30,146 +26,137 @@ import ctypes
 CONFIG = {
     "page_width_mm": 210.0,       # A4 Width
     "page_height_mm": 297.0,      # A4 Height
-    "margin_mm": 15.0,            # Page margins
     "mm_to_pts": 2.83465,         # PostScript points conversion factor
     
-    # Defaults (Startup State: Italic Preset)
+    # Startup State
+    "default_margins": "15",      # Top, Bottom, Left, Right
     "default_pen_width": 2.0,
     "default_group_gap": 8.0,
-    "default_lines": "Ascender: 7\nX-Height: 5\nBase: 0\nDescender: -5",
-    "default_slants": "10: 15",   # Angle: Spacing_mm
+    # Format: Name : PenWidths : LineWidth : DashPattern (solid or space-separated numbers)
+    "default_lines": (
+        "Ascender : 7 : 0.5 : 4 4\n"
+        "X-Height : 5 : 0.5 : 4 4\n"
+        "Base : 0 : 1.5 : solid\n"
+        "Descender : -5 : 0.5 : 4 4"
+    ),
+    # Format: Angle : Spacing_mm : LineWidth : DashPattern
+    "default_slants": "10 : 15 : 0.3 : solid",   
     
     # UI Styling
-    "bg_color": "#242424",        # customtkinter default dark bg
+    "bg_color": "#242424",
     "page_color": "#FFFFFF",
-    "line_color": "#A0A0A0",
-    "base_color": "#000000",
-    "slant_color": "#D3D3D3",
+    "line_color": "#000000",
 }
 
-# -----------------------------------------------------------------------------
-# High-DPI Awareness Initialization
-# -----------------------------------------------------------------------------
 try:
-    # Windows 8.1 and later
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
-    # Fallback for older Windows versions or non-Windows OS
     try:
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
 
 
-# -----------------------------------------------------------------------------
-# Main Application Class
-# -----------------------------------------------------------------------------
 class CalligraphyApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        # App Configuration
         self.title("Calligraphy Guide Sheet Generator")
-        self.geometry("1100x800")
-        self.minsize(900, 600)
+        self.geometry("1200x850")
+        self.minsize(1000, 700)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        # Internal State Tracker for Debouncing
         self._update_job = None
         
-        # Build UI
         self._setup_layout()
         self._build_sidebar()
         self._build_canvas()
         
-        # Initialize default state
         self._set_ui_state({
+            "margin": CONFIG["default_margins"],
             "pen_width": str(CONFIG["default_pen_width"]),
             "group_gap": str(CONFIG["default_group_gap"]),
             "lines": CONFIG["default_lines"],
             "slants": CONFIG["default_slants"]
         })
         
-        # Bind resize event to re-render preview
         self.bind("<Configure>", self._on_resize)
-        
-        # Initial Render
         self.after(200, self.update_preview)
 
-    # --- UI Setup ---
-
     def _setup_layout(self):
-        """Configures the main grid layout."""
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         
-        self.sidebar_frame = ctk.CTkFrame(self, width=300, corner_radius=0)
+        self.sidebar_frame = ctk.CTkScrollableFrame(self, width=350, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(6, weight=1)
         
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=CONFIG["bg_color"])
         self.main_frame.grid(row=0, column=1, sticky="nsew")
 
     def _build_sidebar(self):
-        """Constructs the sidebar controls for the guidelines engine."""
-        # Header
-        lbl_title = ctk.CTkLabel(self.sidebar_frame, text="Guide Parameters", font=ctk.CTkFont(size=20, weight="bold"))
-        lbl_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+        row_idx = 0
         
-        # Pen Width & Gap
+        lbl_title = ctk.CTkLabel(self.sidebar_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
+        lbl_title.grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="w"); row_idx += 1
+        
         frame_metrics = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        frame_metrics.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        frame_metrics.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         
-        ctk.CTkLabel(frame_metrics, text="Pen Width (mm):").grid(row=0, column=0, sticky="w", pady=5)
+        # Inputs
+        ctk.CTkLabel(frame_metrics, text="Margins (mm):").grid(row=0, column=0, sticky="w", pady=5)
+        self.ent_margin = ctk.CTkEntry(frame_metrics, width=80)
+        self.ent_margin.grid(row=0, column=1, sticky="e", pady=5)
+        self.ent_margin.bind("<KeyRelease>", self._debounce_update)
+
+        ctk.CTkLabel(frame_metrics, text="Pen Width (mm):").grid(row=1, column=0, sticky="w", pady=5)
         self.ent_pen_width = ctk.CTkEntry(frame_metrics, width=80)
-        self.ent_pen_width.grid(row=0, column=1, sticky="e", pady=5)
+        self.ent_pen_width.grid(row=1, column=1, sticky="e", pady=5)
         self.ent_pen_width.bind("<KeyRelease>", self._debounce_update)
         
-        ctk.CTkLabel(frame_metrics, text="Group Gap (mm):").grid(row=1, column=0, sticky="w", pady=5)
+        ctk.CTkLabel(frame_metrics, text="Group Gap (mm):").grid(row=2, column=0, sticky="w", pady=5)
         self.ent_group_gap = ctk.CTkEntry(frame_metrics, width=80)
-        self.ent_group_gap.grid(row=1, column=1, sticky="e", pady=5)
+        self.ent_group_gap.grid(row=2, column=1, sticky="e", pady=5)
         self.ent_group_gap.bind("<KeyRelease>", self._debounce_update)
         
-        # Horizontal Lines Configuration
-        ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines (Name: PenWidths)", font=ctk.CTkFont(weight="bold")).grid(row=2, column=0, padx=20, pady=(10, 0), sticky="w")
-        self.txt_lines = ctk.CTkTextbox(self.sidebar_frame, height=120)
-        self.txt_lines.grid(row=3, column=0, padx=20, pady=5, sticky="ew")
-        self.txt_lines.bind("<KeyRelease>", self._debounce_update)
+        # Horizontal Lines
+        ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
+        ctk.CTkLabel(self.sidebar_frame, text="Format: Name : Position : LineWidth : Dash (e.g. 4 4 or solid)", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
         
-        # Slants Configuration
-        ctk.CTkLabel(self.sidebar_frame, text="Slant Overlays (Angle° : Spacing mm)", font=ctk.CTkFont(weight="bold")).grid(row=4, column=0, padx=20, pady=(10, 0), sticky="w")
+        self.txt_lines = ctk.CTkTextbox(self.sidebar_frame, height=120)
+        self.txt_lines.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
+        self.txt_lines.bind("<KeyRelease>", self._debounce_update)
+        self.txt_lines._textbox.configure(undo=True) # Enable Undo/Redo
+        
+        # Slants
+        ctk.CTkLabel(self.sidebar_frame, text="Slant Overlays", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
+        ctk.CTkLabel(self.sidebar_frame, text="Format: Angle° : Spacing : LineWidth : Dash", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
+        
         self.txt_slants = ctk.CTkTextbox(self.sidebar_frame, height=80)
-        self.txt_slants.grid(row=5, column=0, padx=20, pady=5, sticky="ew")
+        self.txt_slants.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         self.txt_slants.bind("<KeyRelease>", self._debounce_update)
+        self.txt_slants._textbox.configure(undo=True) # Enable Undo/Redo
         
         # Actions
         frame_actions = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        frame_actions.grid(row=7, column=0, padx=20, pady=20, sticky="ew")
+        frame_actions.grid(row=row_idx, column=0, padx=20, pady=30, sticky="ew"); row_idx += 1
         frame_actions.grid_columnconfigure(0, weight=1)
         
-        btn_save = ctk.CTkButton(frame_actions, text="Save PostScript (.ps)", command=self.save_postscript, fg_color="#1E90FF", hover_color="#104E8B")
-        btn_save.grid(row=0, column=0, pady=5, sticky="ew")
-        
-        btn_load = ctk.CTkButton(frame_actions, text="Load Template", command=self.load_postscript, fg_color="#555555", hover_color="#333333")
-        btn_load.grid(row=1, column=0, pady=5, sticky="ew")
-        
-        btn_print = ctk.CTkButton(frame_actions, text="Print Now", command=self.print_postscript, fg_color="#2E8B57", hover_color="#1E5C3A")
-        btn_print.grid(row=2, column=0, pady=(20, 5), sticky="ew")
+        ctk.CTkButton(frame_actions, text="Save PostScript (.ps)", command=self.save_postscript, fg_color="#1E90FF", hover_color="#104E8B").grid(row=0, column=0, pady=5, sticky="ew")
+        ctk.CTkButton(frame_actions, text="Load Template", command=self.load_postscript, fg_color="#555555", hover_color="#333333").grid(row=1, column=0, pady=5, sticky="ew")
+        ctk.CTkButton(frame_actions, text="Print Now...", command=self.print_postscript, fg_color="#2E8B57", hover_color="#1E5C3A").grid(row=2, column=0, pady=(20, 5), sticky="ew")
 
     def _build_canvas(self):
-        """Initializes the live vector preview canvas."""
         self.main_frame.grid_columnconfigure(0, weight=1)
         self.main_frame.grid_rowconfigure(0, weight=1)
-        
         self.canvas = tk.Canvas(self.main_frame, bg=CONFIG["bg_color"], highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
 
-    # --- Data Parsing & State Management ---
+    # --- Data Parsing ---
 
     def _get_ui_state(self):
-        """Returns the current UI parameters as a dictionary."""
         return {
+            "margin": self.ent_margin.get().strip(),
             "pen_width": self.ent_pen_width.get().strip(),
             "group_gap": self.ent_group_gap.get().strip(),
             "lines": self.txt_lines.get("1.0", tk.END).strip(),
@@ -177,175 +164,167 @@ class CalligraphyApp(ctk.CTk):
         }
 
     def _set_ui_state(self, state):
-        """Populates the UI fields with the provided dictionary state."""
-        self.ent_pen_width.delete(0, tk.END)
-        self.ent_pen_width.insert(0, state.get("pen_width", ""))
-        
-        self.ent_group_gap.delete(0, tk.END)
-        self.ent_group_gap.insert(0, state.get("group_gap", ""))
-        
-        self.txt_lines.delete("1.0", tk.END)
-        self.txt_lines.insert("1.0", state.get("lines", ""))
-        
-        self.txt_slants.delete("1.0", tk.END)
-        self.txt_slants.insert("1.0", state.get("slants", ""))
-        
+        self.ent_margin.delete(0, tk.END); self.ent_margin.insert(0, state.get("margin", ""))
+        self.ent_pen_width.delete(0, tk.END); self.ent_pen_width.insert(0, state.get("pen_width", ""))
+        self.ent_group_gap.delete(0, tk.END); self.ent_group_gap.insert(0, state.get("group_gap", ""))
+        self.txt_lines.delete("1.0", tk.END); self.txt_lines.insert("1.0", state.get("lines", ""))
+        self.txt_slants.delete("1.0", tk.END); self.txt_slants.insert("1.0", state.get("slants", ""))
         self.update_preview()
 
     def _parse_inputs(self):
-        """Parses UI inputs into strongly typed variables for rendering."""
         try:
+            margin = float(self.ent_margin.get())
             pen_width = float(self.ent_pen_width.get())
             group_gap = float(self.ent_group_gap.get())
+            if pen_width <= 0 or margin < 0 or group_gap < 0:
+                return None
         except ValueError:
-            return None # Invalid numeric input
+            return None 
             
+        def parse_dash(dash_str):
+            if dash_str.lower() in ["solid", ""]: return ()
+            try: return tuple(map(int, dash_str.split()))
+            except: return (4, 4)
+
         lines_data = []
         for line in self.txt_lines.get("1.0", tk.END).split('\n'):
-            if ':' in line:
+            parts = [p.strip() for p in line.split(':')]
+            if len(parts) >= 2:
                 try:
-                    name, pw = line.split(':')
-                    lines_data.append((name.strip(), float(pw.strip())))
+                    name = parts[0]
+                    pos = float(parts[1])
+                    lw = float(parts[2]) if len(parts) > 2 else 1.0
+                    dash = parse_dash(parts[3]) if len(parts) > 3 else (4, 4)
+                    lines_data.append({"name": name, "pos": pos, "lw": lw, "dash": dash})
                 except ValueError:
                     continue
                     
         slants_data = []
         for line in self.txt_slants.get("1.0", tk.END).split('\n'):
-            if ':' in line:
+            parts = [p.strip() for p in line.split(':')]
+            if len(parts) >= 2:
                 try:
-                    angle, spacing = line.split(':')
-                    slants_data.append((float(angle.strip()), float(spacing.strip())))
+                    angle = float(parts[0])
+                    spacing = float(parts[1])
+                    lw = float(parts[2]) if len(parts) > 2 else 0.5
+                    dash = parse_dash(parts[3]) if len(parts) > 3 else ()
+                    if spacing > 0:
+                        slants_data.append({"angle": angle, "spacing": spacing, "lw": lw, "dash": dash})
                 except ValueError:
                     continue
                     
-        return pen_width, group_gap, lines_data, slants_data
+        return margin, pen_width, group_gap, lines_data, slants_data
 
     # --- Live Preview Engine ---
 
     def _debounce_update(self, event=None):
-        """Delays the update_preview call to avoid stuttering while typing."""
         if self._update_job is not None:
             self.after_cancel(self._update_job)
         self._update_job = self.after(300, self.update_preview)
 
     def _on_resize(self, event):
-        """Handles canvas resizing efficiently."""
         if event.widget == self:
             self._debounce_update()
 
     def update_preview(self):
-        """Renders the simplified vector view of the guidelines on the Tkinter Canvas."""
         self.canvas.delete("all")
-        
-        cw = self.canvas.winfo_width()
-        ch = self.canvas.winfo_height()
-        if cw <= 1 or ch <= 1:
-            return
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if cw <= 1 or ch <= 1: return
             
         parsed = self._parse_inputs()
-        if not parsed:
-            return
-        pen_width, group_gap, lines_data, slants_data = parsed
+        if not parsed: return
+        margin, pen_width, group_gap, lines_data, slants_data = parsed
         
-        # Calculate Canvas Scaling (Fit A4 inside canvas with padding)
         pad = 20
-        scale_h = (ch - pad*2) / CONFIG["page_height_mm"]
-        scale_w = (cw - pad*2) / CONFIG["page_width_mm"]
-        scale = min(scale_h, scale_w)
-        
+        scale = min((ch - pad*2) / CONFIG["page_height_mm"], (cw - pad*2) / CONFIG["page_width_mm"])
         offset_x = (cw - (CONFIG["page_width_mm"] * scale)) / 2
         offset_y = (ch - (CONFIG["page_height_mm"] * scale)) / 2
         
-        # Coordinate mapping helper
-        def map_coord(x_mm, y_mm):
-            return offset_x + (x_mm * scale), offset_y + (y_mm * scale)
+        def map_c(x_mm, y_mm): return offset_x + (x_mm * scale), offset_y + (y_mm * scale)
 
         # Draw Page
-        p_x1, p_y1 = map_coord(0, 0)
-        p_x2, p_y2 = map_coord(CONFIG["page_width_mm"], CONFIG["page_height_mm"])
+        p_x1, p_y1 = map_c(0, 0)
+        p_x2, p_y2 = map_c(CONFIG["page_width_mm"], CONFIG["page_height_mm"])
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="#111111")
         
-        margin = CONFIG["margin_mm"]
+        if not lines_data: return
         
-        # Render Slants (Underneath horizontal lines)
-        for angle_deg, spacing in slants_data:
-            if spacing <= 0: continue
-            rad = math.radians(angle_deg)
-            # Distance horizontally to maintain perpendicular spacing
-            dx_step = spacing / math.cos(rad) if math.cos(rad) != 0 else spacing
+        pw_values = [ld["pos"] for ld in lines_data]
+        max_pw, min_pw = max(pw_values), min(pw_values)
+        group_h_mm = (max_pw - min_pw) * pen_width
+        
+        # Calculate Group Math
+        base_y_mm = margin + (max_pw * pen_width)
+        
+        while base_y_mm - (max_pw * pen_width) + group_h_mm <= CONFIG["page_height_mm"] - margin:
+            top_y_mm = base_y_mm - (max_pw * pen_width)
+            bottom_y_mm = base_y_mm - (min_pw * pen_width)
             
-            x_start = -CONFIG["page_height_mm"] * math.tan(abs(rad))
-            x_end = CONFIG["page_width_mm"] + CONFIG["page_height_mm"] * math.tan(abs(rad))
-            
-            x_curr = x_start
-            while x_curr <= x_end:
-                y_bottom = CONFIG["page_height_mm"] - margin
-                x_bottom = x_curr
-                y_top = margin
-                x_top = x_curr + (CONFIG["page_height_mm"] - 2*margin) * math.tan(rad)
+            # 1. Draw Slants (Per Group)
+            for s in slants_data:
+                rad = math.radians(s["angle"])
+                dx_spacing = s["spacing"] / math.cos(rad) if math.cos(rad) != 0 else s["spacing"]
+                dx_offset = group_h_mm * math.tan(rad)
                 
-                pt1 = map_coord(x_bottom, y_bottom)
-                pt2 = map_coord(x_top, y_top)
-                
-                self.canvas.create_line(*pt1, *pt2, fill=CONFIG["slant_color"], width=1)
-                x_curr += dx_step
+                x_curr = margin
+                while x_curr <= CONFIG["page_width_mm"] - margin:
+                    pt1 = map_c(x_curr, bottom_y_mm)
+                    pt2 = map_c(x_curr + dx_offset, top_y_mm)
+                    self.canvas.create_line(*pt1, *pt2, fill="#C0C0C0", width=max(1, s["lw"]*scale), dash=s["dash"])
+                    x_curr += dx_spacing
 
-        # Render Horizontal Lines
-        if lines_data:
-            pw_values = [pw for _, pw in lines_data]
-            max_pw = max(pw_values)
-            min_pw = min(pw_values)
-            
-            current_y = margin + (max_pw * pen_width)
-            
-            while current_y + (abs(min_pw) * pen_width) <= CONFIG["page_height_mm"] - margin:
-                for name, pw in lines_data:
-                    y_line = current_y - (pw * pen_width)
-                    x1, y1 = map_coord(margin, y_line)
-                    x2, y2 = map_coord(CONFIG["page_width_mm"] - margin, y_line)
-                    
-                    color = CONFIG["base_color"] if name.lower() == 'base' else CONFIG["line_color"]
-                    dash = () if name.lower() == 'base' else (4, 4)
-                    width = 2 if name.lower() == 'base' else 1
-                    
-                    self.canvas.create_line(x1, y1, x2, y2, fill=color, dash=dash, width=width)
+            # 2. Draw Horizontal Lines
+            y_base, y_xheight = None, None
+            for ld in lines_data:
+                y_line = base_y_mm - (ld["pos"] * pen_width)
+                x1, y1 = map_c(margin, y_line)
+                x2, y2 = map_c(CONFIG["page_width_mm"] - margin, y_line)
+                self.canvas.create_line(x1, y1, x2, y2, fill=CONFIG["line_color"], dash=ld["dash"], width=max(1, ld["lw"]*scale))
                 
-                current_y += ((max_pw - min_pw) * pen_width) + group_gap
+                if ld["name"].lower() == "base": y_base = y_line
+                if ld["name"].lower() == "x-height": y_xheight = y_line
 
-        # Create clipping mask over the edges using thick rectangles
+            # 3. Draw "x" marker
+            if y_base is not None and y_xheight is not None:
+                mid_y = (y_base + y_xheight) / 2
+                h = abs(y_base - y_xheight) * 0.5
+                
+                # Start slightly to the right of the margin so it's readable
+                x_start_mm = margin + 1 
+                x_start, m_y = map_c(x_start_mm, mid_y)
+                scaled_h = h * scale
+                
+                self.canvas.create_line(x_start, m_y - scaled_h/2, x_start + scaled_h, m_y + scaled_h/2, fill="#FF0000", width=max(1, scale*0.5))
+                self.canvas.create_line(x_start, m_y + scaled_h/2, x_start + scaled_h, m_y - scaled_h/2, fill="#FF0000", width=max(1, scale*0.5))
+
+            # Move to next group
+            base_y_mm += group_h_mm + group_gap
+
+        # Mask margins visually
         mask_color = CONFIG["bg_color"]
-        m_x1, m_y1 = map_coord(margin, margin)
-        m_x2, m_y2 = map_coord(CONFIG["page_width_mm"] - margin, CONFIG["page_height_mm"] - margin)
-        
-        # Mask Top, Bottom, Left, Right to hide slant spillover outside margins
+        m_x1, m_y1 = map_c(margin, margin)
+        m_x2, m_y2 = map_c(CONFIG["page_width_mm"] - margin, CONFIG["page_height_mm"] - margin)
         self.canvas.create_rectangle(0, 0, cw, m_y1, fill=mask_color, outline="")
         self.canvas.create_rectangle(0, m_y2, cw, ch, fill=mask_color, outline="")
         self.canvas.create_rectangle(0, 0, m_x1, ch, fill=mask_color, outline="")
         self.canvas.create_rectangle(m_x2, 0, cw, ch, fill=mask_color, outline="")
 
 
-    # --- PostScript Generation & IO ---
+    # --- PostScript Generation ---
 
     def generate_postscript_string(self):
-        """
-        Generates standard PostScript code.
-        Translates metric calculations to PS points, handling the bottom-left PS origin.
-        Injects JSON representation of the GUI state as Ghost Metadata.
-        """
         parsed = self._parse_inputs()
-        if not parsed:
-            raise ValueError("Invalid parameters.")
-        pen_width, group_gap, lines_data, slants_data = parsed
+        if not parsed: raise ValueError("Invalid parameters.")
+        margin, pen_width, group_gap, lines_data, slants_data = parsed
         
         state_json = json.dumps(self._get_ui_state())
-        
         width_pts = CONFIG["page_width_mm"] * CONFIG["mm_to_pts"]
         height_pts = CONFIG["page_height_mm"] * CONFIG["mm_to_pts"]
         
-        ps_lines = [
+        ps = [
             "%!PS-Adobe-3.0",
             f"%%BoundingBox: 0 0 {int(width_pts)} {int(height_pts)}",
-            "%%Creator: Python Calligraphy Guide Generator",
+            "%%Creator: Python Calligraphy Guide Generator Pro",
             "%%EndComments",
             "% BEGIN_METADATA",
             f"% {state_json}",
@@ -355,145 +334,156 @@ class CalligraphyApp(ctk.CTk):
             ""
         ]
 
-        # Draw Slants
-        margin = CONFIG["margin_mm"]
-        if slants_data:
-            # Set up clipping path for margins so slants don't draw to edge of paper
-            ps_lines.extend([
-                "gsave",
-                "newpath",
-                f"{margin} mm {margin} mm moveto",
-                f"{CONFIG['page_width_mm'] - margin} mm {margin} mm lineto",
-                f"{CONFIG['page_width_mm'] - margin} mm {CONFIG['page_height_mm'] - margin} mm lineto",
-                f"{margin} mm {CONFIG['page_height_mm'] - margin} mm lineto",
-                "closepath clip",
-                "0.8 setgray",
-                "0.3 setlinewidth"
-            ])
+        def format_dash(dash_tuple):
+            if not dash_tuple: return "[] 0 setdash"
+            return f"[{' '.join(map(str, dash_tuple))}] 0 setdash"
+
+        if not lines_data:
+            ps.append("showpage")
+            return "\n".join(ps)
+
+        pw_values = [ld["pos"] for ld in lines_data]
+        max_pw, min_pw = max(pw_values), min(pw_values)
+        group_h_mm = (max_pw - min_pw) * pen_width
+        base_y_mm = margin + (max_pw * pen_width)
+        
+        # Clipping path for margins
+        ps.extend([
+            "gsave",
+            "newpath",
+            f"{margin} mm {margin} mm moveto",
+            f"{CONFIG['page_width_mm'] - margin} mm {margin} mm lineto",
+            f"{CONFIG['page_width_mm'] - margin} mm {CONFIG['page_height_mm'] - margin} mm lineto",
+            f"{margin} mm {CONFIG['page_height_mm'] - margin} mm lineto",
+            "closepath clip"
+        ])
+
+        while base_y_mm - (max_pw * pen_width) + group_h_mm <= CONFIG["page_height_mm"] - margin:
+            top_y_mm = base_y_mm - (max_pw * pen_width)
+            bottom_y_mm = base_y_mm - (min_pw * pen_width)
             
-            for angle_deg, spacing in slants_data:
-                if spacing <= 0: continue
-                rad = math.radians(angle_deg)
-                dx_step = spacing / math.cos(rad) if math.cos(rad) != 0 else spacing
+            ps_top_y = CONFIG["page_height_mm"] - top_y_mm
+            ps_bottom_y = CONFIG["page_height_mm"] - bottom_y_mm
+
+            # 1. Slants
+            for s in slants_data:
+                rad = math.radians(s["angle"])
+                dx_spacing = s["spacing"] / math.cos(rad) if math.cos(rad) != 0 else s["spacing"]
+                dx_offset = group_h_mm * math.tan(rad)
                 
-                x_start = -CONFIG["page_height_mm"] * math.tan(abs(rad))
-                x_end = CONFIG["page_width_mm"] + CONFIG["page_height_mm"] * math.tan(abs(rad))
+                ps.append(f"0.7 setgray {s['lw']} setlinewidth {format_dash(s['dash'])}")
                 
-                x_curr = x_start
-                while x_curr <= x_end:
-                    y_bottom_mm = margin
-                    x_bottom_mm = x_curr
-                    y_top_mm = CONFIG["page_height_mm"] - margin
-                    x_top_mm = x_curr + (CONFIG["page_height_mm"] - 2*margin) * math.tan(rad)
-                    
-                    ps_lines.extend([
+                x_curr = margin
+                while x_curr <= CONFIG["page_width_mm"] - margin:
+                    ps.extend([
                         "newpath",
-                        f"{x_bottom_mm:.2f} mm {y_bottom_mm:.2f} mm moveto",
-                        f"{x_top_mm:.2f} mm {y_top_mm:.2f} mm lineto",
+                        f"{x_curr:.2f} mm {ps_bottom_y:.2f} mm moveto",
+                        f"{(x_curr + dx_offset):.2f} mm {ps_top_y:.2f} mm lineto",
                         "stroke"
                     ])
-                    x_curr += dx_step
-            ps_lines.append("grestore\n")
+                    x_curr += dx_spacing
 
-        # Draw Horizontal Lines
-        if lines_data:
-            pw_values = [pw for _, pw in lines_data]
-            max_pw = max(pw_values)
-            min_pw = min(pw_values)
-            
-            current_y = margin + (max_pw * pen_width)
-            
-            while current_y + (abs(min_pw) * pen_width) <= CONFIG["page_height_mm"] - margin:
-                for name, pw in lines_data:
-                    # In Tkinter, Y is from top. In PS, Y is from bottom.
-                    y_line_mm = current_y - (pw * pen_width)
-                    y_ps_mm = CONFIG["page_height_mm"] - y_line_mm
-                    
-                    # Formatting based on line type
-                    if name.lower() == 'base':
-                        ps_lines.append("0 setgray 0.6 setlinewidth [] 0 setdash")
-                    else:
-                        ps_lines.append("0.4 setgray 0.3 setlinewidth [2 2] 0 setdash")
-                    
-                    ps_lines.extend([
-                        "newpath",
-                        f"{margin} mm {y_ps_mm:.2f} mm moveto",
-                        f"{CONFIG['page_width_mm'] - margin} mm {y_ps_mm:.2f} mm lineto",
-                        "stroke"
-                    ])
-                current_y += ((max_pw - min_pw) * pen_width) + group_gap
+            # 2. Horizontal Lines
+            y_base, y_xheight = None, None
+            for ld in lines_data:
+                y_line_mm = base_y_mm - (ld["pos"] * pen_width)
+                ps_y = CONFIG["page_height_mm"] - y_line_mm
+                
+                ps.append(f"0 setgray {ld['lw']} setlinewidth {format_dash(ld['dash'])}")
+                ps.extend([
+                    "newpath",
+                    f"{margin} mm {ps_y:.2f} mm moveto",
+                    f"{CONFIG['page_width_mm'] - margin} mm {ps_y:.2f} mm lineto",
+                    "stroke"
+                ])
+                
+                if ld["name"].lower() == "base": y_base = y_line_mm
+                if ld["name"].lower() == "x-height": y_xheight = y_line_mm
 
-        ps_lines.append("showpage")
-        return "\n".join(ps_lines)
+            # 3. 'x' Marker
+            if y_base is not None and y_xheight is not None:
+                mid_y = (y_base + y_xheight) / 2
+                h = abs(y_base - y_xheight) * 0.5
+                ps_mid = CONFIG["page_height_mm"] - mid_y
+                x_start = margin + 1
+                
+                ps.append("1 0 0 setrgbcolor 0.5 setlinewidth [] 0 setdash") # Red color
+                ps.extend([
+                    "newpath",
+                    f"{x_start:.2f} mm {(ps_mid - h/2):.2f} mm moveto",
+                    f"{(x_start + h):.2f} mm {(ps_mid + h/2):.2f} mm lineto",
+                    "stroke",
+                    "newpath",
+                    f"{x_start:.2f} mm {(ps_mid + h/2):.2f} mm moveto",
+                    f"{(x_start + h):.2f} mm {(ps_mid - h/2):.2f} mm lineto",
+                    "stroke"
+                ])
+
+            base_y_mm += group_h_mm + group_gap
+
+        ps.append("grestore") # Remove clipping path
+        ps.append("showpage")
+        return "\n".join(ps)
+
+    # --- IO & Printing ---
 
     def save_postscript(self):
-        """Prompts the user to save the generated PostScript file."""
-        try:
-            ps_code = self.generate_postscript_string()
+        try: ps_code = self.generate_postscript_string()
         except ValueError:
-            messagebox.showerror("Validation Error", "Please ensure all inputs are correctly formatted.")
+            messagebox.showerror("Error", "Invalid parameters.")
             return
 
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".ps",
-            filetypes=[("PostScript Files", "*.ps")],
-            title="Save Guide Sheet"
-        )
+        filepath = filedialog.asksaveasfilename(defaultextension=".ps", filetypes=[("PostScript", "*.ps")])
         if filepath:
-            try:
-                with open(filepath, 'w') as f:
-                    f.write(ps_code)
-                messagebox.showinfo("Success", f"PostScript file saved successfully to:\n{filepath}")
-            except Exception as e:
-                messagebox.showerror("Save Error", str(e))
+            with open(filepath, 'w') as f: f.write(ps_code)
+            messagebox.showinfo("Success", "File saved!")
 
     def load_postscript(self):
-        """Reads a previously generated .ps file, extracting embedded JSON metadata to update UI."""
-        filepath = filedialog.askopenfilename(
-            filetypes=[("PostScript Files", "*.ps")],
-            title="Load Template"
-        )
+        filepath = filedialog.askopenfilename(filetypes=[("PostScript", "*.ps")])
         if filepath:
-            try:
-                with open(filepath, 'r') as f:
-                    content = f.read()
-                
-                # Regex search for the custom metadata block
-                match = re.search(r"% BEGIN_METADATA\n% (.*?)\n% END_METADATA", content)
-                if match:
-                    state_json = match.group(1)
-                    state = json.loads(state_json)
-                    self._set_ui_state(state)
-                    messagebox.showinfo("Success", "Template loaded successfully.")
-                else:
-                    messagebox.showwarning("Warning", "No template metadata found in this PostScript file.")
-            except Exception as e:
-                messagebox.showerror("Load Error", f"Failed to load file:\n{e}")
+            with open(filepath, 'r') as f: content = f.read()
+            match = re.search(r"% BEGIN_METADATA\n% (.*?)\n% END_METADATA", content)
+            if match:
+                self._set_ui_state(json.loads(match.group(1)))
+            else:
+                messagebox.showwarning("Warning", "No metadata found.")
+
+    def _find_ghostscript(self):
+        """Hunts the Windows registry/directories for Ghostscript execution paths."""
+        paths = [r"C:\Program Files\gs", r"C:\Program Files (x86)\gs"]
+        for base in paths:
+            if os.path.exists(base):
+                for folder in os.listdir(base):
+                    bin_path = os.path.join(base, folder, "bin")
+                    for exe in ["gswin64c.exe", "gswin32c.exe"]:
+                        exe_path = os.path.join(bin_path, exe)
+                        if os.path.exists(exe_path): return exe_path
+        return None
 
     def print_postscript(self):
-        """
-        Sends the file directly to the default Windows printer.
-        Relies on system associations for the 'print' shell verb.
-        """
-        try:
-            ps_code = self.generate_postscript_string()
+        try: ps_code = self.generate_postscript_string()
         except ValueError:
-            messagebox.showerror("Validation Error", "Please ensure all inputs are correctly formatted.")
+            messagebox.showerror("Error", "Invalid parameters.")
             return
             
-        temp_path = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp_print.ps")
-        try:
-            with open(temp_path, 'w') as f:
-                f.write(ps_code)
-            
-            # Use Windows native shell execute to print
-            os.startfile(temp_path, "print")
-        except Exception as e:
-            messagebox.showerror("Print Error", f"Could not send to printer.\nEnsure a PostScript driver (e.g., Ghostscript) is installed and associated with .ps files.\n\nError: {e}")
+        gs_path = self._find_ghostscript()
+        if not gs_path:
+            messagebox.showerror(
+                "Ghostscript Required", 
+                "Could not locate Ghostscript.\n\nTo use the native Print Dialog, please install Ghostscript (64-bit) in its default directory (C:\\Program Files\\gs\\)."
+            )
+            return
 
-# -----------------------------------------------------------------------------
-# Bootstrapper
-# -----------------------------------------------------------------------------
+        temp_path = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp_print.ps")
+        with open(temp_path, 'w') as f:
+            f.write(ps_code)
+            
+        # -sDEVICE=mswinpr2 tells Ghostscript to open the standard Windows Print Dialog.
+        try:
+            subprocess.run([gs_path, "-sDEVICE=mswinpr2", "-dBATCH", "-dNOPAUSE", temp_path], check=True)
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Print Cancelled or Error", f"Printing process ended.\n{e}")
+
 if __name__ == "__main__":
     app = CalligraphyApp()
     app.mainloop()
