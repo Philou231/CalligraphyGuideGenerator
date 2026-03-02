@@ -1,9 +1,10 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition v10
+Calligraphy Guide Sheet Generator - Pro Edition v11
 ---------------------------------------------------
 Updates:
-- Reverted dynamic dash scaling in Tkinter preview per user request.
-- Updated dash arrays to user's highly questionable (4, 1) and (1, 1) preferences.
+- Decoupled Line Styles: GUI and PostScript now use completely independent dash arrays.
+- Implemented user's pixel-tight GUI preferences (4, 1) and (1, 1).
+- Implemented professional bleed-resistant PS preferences (2, 1.5) and (0.5, 1.5).
 """
 
 import tkinter as tk
@@ -31,19 +32,27 @@ CONFIG = {
     "default_group_gap": "5.0",
     
     "default_lines": [
-        {"name": "Ascender", "pos": "7", "lw": "0.10", "style": "Solid"},
+        {"name": "Ascender", "pos": "7", "lw": "0.10", "style": "Dashed"},
         {"name": "X-Height", "pos": "5", "lw": "0.10", "style": "Solid"},
         {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
-        {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Solid"}
+        {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Dotted"}
     ],
     "default_slants": [
-        {"angle": "10", "spacing": "5 mm", "lw": "0.10", "style": "Dotted"}
+        {"angle": "10", "spacing": "5 mm", "lw": "0.10", "style": "Solid"}
     ],
     
-    "style_map": {
+    # GUI Dash Arrays (Pixel-tight for low-res screens)
+    "style_map_ui": {
         "Solid": (),
-        "Dashed": (4, 1),
+        "Dashed": (8, 4),
         "Dotted": (1, 1)
+    },
+    
+    # PostScript Dash Arrays (Physical millimeters for ink bleed resistance)
+    "style_map_ps": {
+        "Solid": (),
+        "Dashed": (2, 1.5),
+        "Dotted": (0.5, 1.5)
     },
     
     "bg_color": "#242424",
@@ -120,11 +129,11 @@ class GeometryEngine:
                     x_bottom = x_cross + (base_y_mm - bottom_y_mm) * math.tan(rad)
                     
                     if max(x_top, x_bottom) > margin_h and min(x_top, x_bottom) < page_width - margin_h:
-                        rd.slants.append((x_top, top_y_mm, x_bottom, bottom_y_mm, s["lw"], s["dash"]))
+                        rd.slants.append((x_top, top_y_mm, x_bottom, bottom_y_mm, s["lw"], s["style"]))
 
             for ld in lines_data:
                 y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_width
-                rd.horizontals.append((y_line, ld["lw"], ld["dash"]))
+                rd.horizontals.append((y_line, ld["lw"], ld["style"]))
 
             if xheight_pos is not None:
                 mid_y_mm = (base_y_mm + y_xheight_mm) / 2.0
@@ -168,8 +177,9 @@ class PostScriptExporter:
             "closepath clip"
         ])
 
-        for (x_top, y_top, x_bot, y_bot, lw, dash) in rd.slants:
-            ps.append(f"0 setgray {lw:.4f} setlinewidth {format_dash(dash)}")
+        for (x_top, y_top, x_bot, y_bot, lw, style) in rd.slants:
+            ps_dash = CONFIG["style_map_ps"].get(style, ())
+            ps.append(f"0 setgray {lw:.4f} setlinewidth {format_dash(ps_dash)}")
             ps.extend([
                 "newpath",
                 f"{x_bot:.4f} mm {(rd.page_height - y_bot):.4f} mm moveto",
@@ -177,8 +187,9 @@ class PostScriptExporter:
                 "stroke"
             ])
 
-        for (y, lw, dash) in rd.horizontals:
-            ps.append(f"0 setgray {lw:.4f} setlinewidth {format_dash(dash)}")
+        for (y, lw, style) in rd.horizontals:
+            ps_dash = CONFIG["style_map_ps"].get(style, ())
+            ps.append(f"0 setgray {lw:.4f} setlinewidth {format_dash(ps_dash)}")
             ps.extend([
                 "newpath",
                 f"{rd.margin_h:.4f} mm {(rd.page_height - y):.4f} mm moveto",
@@ -355,9 +366,7 @@ class CalligraphyApp(ctk.CTk):
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.canvas.bind("<B1-Motion>", self._on_drag_motion)
         
-        # Windows/Mac MouseWheel
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
-        # Linux MouseWheel
         self.canvas.bind("<Button-4>", self._on_mousewheel)
         self.canvas.bind("<Button-5>", self._on_mousewheel)
 
@@ -577,8 +586,8 @@ class CalligraphyApp(ctk.CTk):
                 pos = float(r["pos"].get())
                 lw = self._parse_val(r["lw"].get())
                 if lw is None: continue
-                dash = CONFIG["style_map"].get(r["style"].get(), ())
-                lines_data.append({"name": name, "pos": pos, "lw": lw, "dash": dash})
+                style = r["style"].get()
+                lines_data.append({"name": name, "pos": pos, "lw": lw, "style": style})
             except ValueError: continue
             
         for r in self.slant_rows:
@@ -588,8 +597,8 @@ class CalligraphyApp(ctk.CTk):
                 if spacing is None or spacing <= 0: continue
                 lw = self._parse_val(r["lw"].get())
                 if lw is None: continue
-                dash = CONFIG["style_map"].get(r["style"].get(), ())
-                slants_data.append({"angle": angle, "spacing": spacing, "lw": lw, "dash": dash})
+                style = r["style"].get()
+                slants_data.append({"angle": angle, "spacing": spacing, "lw": lw, "style": style})
             except ValueError: continue
                     
         return pw, ph, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data
@@ -627,15 +636,15 @@ class CalligraphyApp(ctk.CTk):
         p_x2, p_y2 = map_c(rd.page_width, rd.page_height)
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="")
         
-        for (x1, y1, x2, y2, lw, dash) in rd.slants:
+        for (x1, y1, x2, y2, lw, style) in rd.slants:
             pt1, pt2 = map_c(x1, y1), map_c(x2, y2)
-            # Reverted dynamic scaling here. Raw dash array used.
-            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], width=max(1, lw*actual_scale), dash=dash)
+            tk_dash = CONFIG["style_map_ui"].get(style, ())
+            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], width=max(1, lw*actual_scale), dash=tk_dash)
 
-        for (y, lw, dash) in rd.horizontals:
+        for (y, lw, style) in rd.horizontals:
             pt1, pt2 = map_c(rd.margin_h, y), map_c(rd.page_width - rd.margin_h, y)
-            # Reverted dynamic scaling here. Raw dash array used.
-            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], dash=dash, width=max(1, lw*actual_scale))
+            tk_dash = CONFIG["style_map_ui"].get(style, ())
+            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], dash=tk_dash, width=max(1, lw*actual_scale))
 
         for (x_c, y_c, h) in rd.markers:
             cx, cy = map_c(x_c, y_c)
