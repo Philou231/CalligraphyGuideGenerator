@@ -1,10 +1,10 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition v6
+Calligraphy Guide Sheet Generator - Pro Edition v7
 --------------------------------------------------
 Updates:
-- Adobe-style Smart Input Parsing: Mix 'in', 'inch', '"', or 'mm' in any field.
-- Eradicated global unit toggle; the UI now respects granular, per-field strings.
-- Restored custom slant line clearance anchors (1.0mm and 0.01mm).
+- UI Overhaul: Dynamic Data Grids (Spreadsheet style) replace raw text boxes.
+- Persistent Smart Parsing: Grid cells retain full 'in'/'mm' string intelligence.
+- Friendly Dropdowns: Dash patterns replaced with "Solid", "Dashed", "Dotted" menus.
 """
 
 import tkinter as tk
@@ -24,32 +24,37 @@ CONFIG = {
     "mm_to_pts": 72.0 / 25.4,
     "in_to_mm": 25.4,
     
-    # Startup State Defaults (Notice the mixed strings)
     "default_page_width": "8.5 in",
     "default_page_height": "11 in",
     "default_margin_v":  "5 mm",
     "default_margin_h":  "5 mm",
-    "default_pen_width": "1.0",      # defaults to mm
-    "default_group_gap": "5.0",      # defaults to mm
+    "default_pen_width": "1.0",
+    "default_group_gap": "5.0",
     
-    "default_lines": (
-        "Ascender : 7 : 0.10 : solid\n"
-        "X-Height : 5 : 0.10 : solid\n"
-        "Base : 0 : 0.30 : solid\n"
-        "Descender : -5 : 0.10 : solid"
-    ),
-    "default_slants": "10 : 5 : 0.10 : 1 1",   
+    # Defaults now structured for the Grid UI
+    "default_lines": [
+        {"name": "Ascender", "pos": "7", "lw": "0.10", "style": "Dashed"},
+        {"name": "X-Height", "pos": "5", "lw": "0.10", "style": "Dashed"},
+        {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
+        {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Dashed"}
+    ],
+    "default_slants": [
+        {"angle": "10", "spacing": "0.25 in", "lw": "0.10", "style": "Dotted"}
+    ],
+    
+    "style_map": {
+        "Solid": (),
+        "Dashed": (4, 4),
+        "Dotted": (1, 1)
+    },
     
     "bg_color": "#242424",
     "page_color": "#FFFFFF",
     "line_color": "#000000",
 }
 
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    try: ctypes.windll.user32.SetProcessDPIAware()
-    except Exception: pass
+try: ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception: pass
 
 # -----------------------------------------------------------------------------
 # Core Architecture: Data & Engine
@@ -61,7 +66,6 @@ class RenderData:
         self.page_height = page_height
         self.margin_v = margin_v
         self.margin_h = margin_h
-        
         self.slants = []
         self.horizontals = []
         self.markers = []
@@ -210,13 +214,16 @@ class CalligraphyApp(ctk.CTk):
         super().__init__()
         
         self.title("Calligraphy Guide Sheet Generator")
-        self.geometry("1200x900")
-        self.minsize(1050, 750)
+        self.geometry("1300x900")
+        self.minsize(1100, 750)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
         self.backend_state = None
         self._update_job = None
+        
+        self.line_rows = []
+        self.slant_rows = []
         
         self._setup_layout()
         self._build_sidebar()
@@ -239,7 +246,7 @@ class CalligraphyApp(ctk.CTk):
     def _setup_layout(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self.sidebar_frame = ctk.CTkScrollableFrame(self, width=380, corner_radius=0)
+        self.sidebar_frame = ctk.CTkScrollableFrame(self, width=450, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=CONFIG["bg_color"])
         self.main_frame.grid(row=0, column=1, sticky="nsew")
@@ -247,70 +254,79 @@ class CalligraphyApp(ctk.CTk):
     def _build_sidebar(self):
         row_idx = 0
         
-        lbl_title = ctk.CTkLabel(self.sidebar_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
-        lbl_title.grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="w"); row_idx += 1
+        ctk.CTkLabel(self.sidebar_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="w"); row_idx += 1
         
         # --- Page & Margins ---
-        self.lbl_page = ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm or in)", font=ctk.CTkFont(weight="bold"))
-        self.lbl_page.grid(row=row_idx, column=0, padx=20, pady=(5, 0), sticky="w"); row_idx += 1
-        
+        ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm or in)", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(5, 0), sticky="w"); row_idx += 1
         frame_page = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         frame_page.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         
         ctk.CTkLabel(frame_page, text="Page Width:").grid(row=0, column=0, sticky="w", pady=5)
-        self.ent_page_width = ctk.CTkEntry(frame_page, width=70)
+        self.ent_page_width = ctk.CTkEntry(frame_page, width=80)
         self.ent_page_width.grid(row=0, column=1, sticky="e", pady=5)
         self.ent_page_width.bind("<KeyRelease>", self._debounce_update)
         
         ctk.CTkLabel(frame_page, text="Page Height:").grid(row=0, column=2, sticky="w", padx=(15, 0), pady=5)
-        self.ent_page_height = ctk.CTkEntry(frame_page, width=70)
+        self.ent_page_height = ctk.CTkEntry(frame_page, width=80)
         self.ent_page_height.grid(row=0, column=3, sticky="e", pady=5)
         self.ent_page_height.bind("<KeyRelease>", self._debounce_update)
 
         ctk.CTkLabel(frame_page, text="Vert. Margin:").grid(row=1, column=0, sticky="w", pady=5)
-        self.ent_margin_v = ctk.CTkEntry(frame_page, width=70)
+        self.ent_margin_v = ctk.CTkEntry(frame_page, width=80)
         self.ent_margin_v.grid(row=1, column=1, sticky="e", pady=5)
         self.ent_margin_v.bind("<KeyRelease>", self._debounce_update)
         
         ctk.CTkLabel(frame_page, text="Horz. Margin:").grid(row=1, column=2, sticky="w", padx=(15, 0), pady=5)
-        self.ent_margin_h = ctk.CTkEntry(frame_page, width=70)
+        self.ent_margin_h = ctk.CTkEntry(frame_page, width=80)
         self.ent_margin_h.grid(row=1, column=3, sticky="e", pady=5)
         self.ent_margin_h.bind("<KeyRelease>", self._debounce_update)
 
         # --- Calligraphy Metrics ---
-        self.lbl_metrics = ctk.CTkLabel(self.sidebar_frame, text="Calligraphy Metrics (mm or in)", font=ctk.CTkFont(weight="bold"))
-        self.lbl_metrics.grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
-        
+        ctk.CTkLabel(self.sidebar_frame, text="Calligraphy Metrics (mm or in)", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
         frame_metrics = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         frame_metrics.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         
         ctk.CTkLabel(frame_metrics, text="Pen Width:").grid(row=0, column=0, sticky="w", pady=5)
-        self.ent_pen_width = ctk.CTkEntry(frame_metrics, width=70)
+        self.ent_pen_width = ctk.CTkEntry(frame_metrics, width=80)
         self.ent_pen_width.grid(row=0, column=1, sticky="e", pady=5)
         self.ent_pen_width.bind("<KeyRelease>", self._debounce_update)
         
         ctk.CTkLabel(frame_metrics, text="Group Gap:").grid(row=0, column=2, sticky="w", padx=(15, 0), pady=5)
-        self.ent_group_gap = ctk.CTkEntry(frame_metrics, width=70)
+        self.ent_group_gap = ctk.CTkEntry(frame_metrics, width=80)
         self.ent_group_gap.grid(row=0, column=3, sticky="e", pady=5)
         self.ent_group_gap.bind("<KeyRelease>", self._debounce_update)
         
-        # --- Horizontal Lines ---
+        # --- Horizontal Lines Grid ---
         ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
-        ctk.CTkLabel(self.sidebar_frame, text="Format: Name : Position : LineWidth : Dash", justify="left", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
         
-        self.txt_lines = ctk.CTkTextbox(self.sidebar_frame, height=120)
-        self.txt_lines.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
-        self.txt_lines.bind("<KeyRelease>", self._debounce_update)
-        self.txt_lines._textbox.configure(undo=True)
+        # Header Row
+        hdr_lines = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        hdr_lines.grid(row=row_idx, column=0, padx=20, pady=(5,0), sticky="ew"); row_idx += 1
+        ctk.CTkLabel(hdr_lines, text="Name", width=100, anchor="w").grid(row=0, column=0, padx=2)
+        ctk.CTkLabel(hdr_lines, text="Pos", width=60, anchor="w").grid(row=0, column=1, padx=2)
+        ctk.CTkLabel(hdr_lines, text="Width", width=70, anchor="w").grid(row=0, column=2, padx=2)
+        ctk.CTkLabel(hdr_lines, text="Style", width=90, anchor="w").grid(row=0, column=3, padx=2)
         
-        # --- Slants ---
+        self.frame_lines_grid = ctk.CTkFrame(self.sidebar_frame, fg_color="#2B2B2B")
+        self.frame_lines_grid.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
+        
+        ctk.CTkButton(self.sidebar_frame, text="➕ Add Line", command=self._add_line_row, width=100, fg_color="#444444", hover_color="#333333").grid(row=row_idx, column=0, padx=20, pady=(0,10), sticky="w"); row_idx += 1
+
+        # --- Slants Grid ---
         ctk.CTkLabel(self.sidebar_frame, text="Slant Overlays", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
-        ctk.CTkLabel(self.sidebar_frame, text="Format: Angle° : Spacing : LineWidth : Dash", justify="left", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
         
-        self.txt_slants = ctk.CTkTextbox(self.sidebar_frame, height=80)
-        self.txt_slants.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
-        self.txt_slants.bind("<KeyRelease>", self._debounce_update)
-        self.txt_slants._textbox.configure(undo=True)
+        # Header Row
+        hdr_slants = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        hdr_slants.grid(row=row_idx, column=0, padx=20, pady=(5,0), sticky="ew"); row_idx += 1
+        ctk.CTkLabel(hdr_slants, text="Angle°", width=80, anchor="w").grid(row=0, column=0, padx=2)
+        ctk.CTkLabel(hdr_slants, text="Spacing", width=80, anchor="w").grid(row=0, column=1, padx=2)
+        ctk.CTkLabel(hdr_slants, text="Width", width=70, anchor="w").grid(row=0, column=2, padx=2)
+        ctk.CTkLabel(hdr_slants, text="Style", width=90, anchor="w").grid(row=0, column=3, padx=2)
+        
+        self.frame_slants_grid = ctk.CTkFrame(self.sidebar_frame, fg_color="#2B2B2B")
+        self.frame_slants_grid.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
+        
+        ctk.CTkButton(self.sidebar_frame, text="➕ Add Slant", command=self._add_slant_row, width=100, fg_color="#444444", hover_color="#333333").grid(row=row_idx, column=0, padx=20, pady=(0,10), sticky="w"); row_idx += 1
         
         # --- Actions ---
         frame_actions = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -327,10 +343,89 @@ class CalligraphyApp(ctk.CTk):
         self.canvas = tk.Canvas(self.main_frame, bg=CONFIG["bg_color"], highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
 
+    # --- Grid Dynamic Controls ---
+
+    def _add_line_row(self, data=None):
+        if data is None: data = {"name": "", "pos": "", "lw": "0.10", "style": "Solid"}
+        
+        row_frame = ctk.CTkFrame(self.frame_lines_grid, fg_color="transparent")
+        row_frame.pack(fill="x", padx=5, pady=2)
+        
+        ent_name = ctk.CTkEntry(row_frame, width=100)
+        ent_name.insert(0, data["name"])
+        ent_name.grid(row=0, column=0, padx=2)
+        ent_name.bind("<KeyRelease>", self._debounce_update)
+        
+        ent_pos = ctk.CTkEntry(row_frame, width=60)
+        ent_pos.insert(0, data["pos"])
+        ent_pos.grid(row=0, column=1, padx=2)
+        ent_pos.bind("<KeyRelease>", self._debounce_update)
+        
+        ent_lw = ctk.CTkEntry(row_frame, width=70)
+        ent_lw.insert(0, data["lw"])
+        ent_lw.grid(row=0, column=2, padx=2)
+        ent_lw.bind("<KeyRelease>", self._debounce_update)
+        
+        opt_style = ctk.CTkOptionMenu(row_frame, values=["Solid", "Dashed", "Dotted"], width=90, command=self._debounce_update)
+        opt_style.set(data.get("style", "Solid"))
+        opt_style.grid(row=0, column=3, padx=2)
+        
+        btn_del = ctk.CTkButton(row_frame, text="🗑", width=30, fg_color="#8B0000", hover_color="#5A0000")
+        btn_del.grid(row=0, column=4, padx=5)
+        
+        row_dict = {"frame": row_frame, "name": ent_name, "pos": ent_pos, "lw": ent_lw, "style": opt_style}
+        btn_del.configure(command=lambda: self._delete_line_row(row_dict))
+        
+        self.line_rows.append(row_dict)
+        self._debounce_update()
+
+    def _delete_line_row(self, row_dict):
+        row_dict["frame"].destroy()
+        self.line_rows.remove(row_dict)
+        self._debounce_update()
+
+    def _add_slant_row(self, data=None):
+        if data is None: data = {"angle": "10", "spacing": "5", "lw": "0.10", "style": "Solid"}
+        
+        row_frame = ctk.CTkFrame(self.frame_slants_grid, fg_color="transparent")
+        row_frame.pack(fill="x", padx=5, pady=2)
+        
+        ent_angle = ctk.CTkEntry(row_frame, width=80)
+        ent_angle.insert(0, data["angle"])
+        ent_angle.grid(row=0, column=0, padx=2)
+        ent_angle.bind("<KeyRelease>", self._debounce_update)
+        
+        ent_spacing = ctk.CTkEntry(row_frame, width=80)
+        ent_spacing.insert(0, data["spacing"])
+        ent_spacing.grid(row=0, column=1, padx=2)
+        ent_spacing.bind("<KeyRelease>", self._debounce_update)
+        
+        ent_lw = ctk.CTkEntry(row_frame, width=70)
+        ent_lw.insert(0, data["lw"])
+        ent_lw.grid(row=0, column=2, padx=2)
+        ent_lw.bind("<KeyRelease>", self._debounce_update)
+        
+        opt_style = ctk.CTkOptionMenu(row_frame, values=["Solid", "Dashed", "Dotted"], width=90, command=self._debounce_update)
+        opt_style.set(data.get("style", "Solid"))
+        opt_style.grid(row=0, column=3, padx=2)
+        
+        btn_del = ctk.CTkButton(row_frame, text="🗑", width=30, fg_color="#8B0000", hover_color="#5A0000")
+        btn_del.grid(row=0, column=4, padx=5)
+        
+        row_dict = {"frame": row_frame, "angle": ent_angle, "spacing": ent_spacing, "lw": ent_lw, "style": opt_style}
+        btn_del.configure(command=lambda: self._delete_slant_row(row_dict))
+        
+        self.slant_rows.append(row_dict)
+        self._debounce_update()
+
+    def _delete_slant_row(self, row_dict):
+        row_dict["frame"].destroy()
+        self.slant_rows.remove(row_dict)
+        self._debounce_update()
+
     # --- Data Parsing Engine ---
 
     def _parse_val(self, val_str):
-        """Intelligently extracts mm conversions from mixed string formats."""
         val_str = str(val_str).strip().lower()
         if val_str.endswith(('in', 'inch', '"')):
             num_str = re.sub(r'[a-z"]', '', val_str).strip()
@@ -352,8 +447,22 @@ class CalligraphyApp(ctk.CTk):
             "margin_h": self.ent_margin_h.get().strip(),
             "pen_width": self.ent_pen_width.get().strip(),
             "group_gap": self.ent_group_gap.get().strip(),
-            "lines": self.txt_lines.get("1.0", tk.END).strip(),
-            "slants": self.txt_slants.get("1.0", tk.END).strip()
+            "lines": [
+                {
+                    "name": r["name"].get().strip(), 
+                    "pos": r["pos"].get().strip(), 
+                    "lw": r["lw"].get().strip(), 
+                    "style": r["style"].get()
+                } for r in self.line_rows
+            ],
+            "slants": [
+                {
+                    "angle": r["angle"].get().strip(), 
+                    "spacing": r["spacing"].get().strip(), 
+                    "lw": r["lw"].get().strip(), 
+                    "style": r["style"].get()
+                } for r in self.slant_rows
+            ]
         }
 
     def _set_ui_state(self, state):
@@ -363,8 +472,15 @@ class CalligraphyApp(ctk.CTk):
         self.ent_margin_h.delete(0, tk.END); self.ent_margin_h.insert(0, state.get("margin_h", ""))
         self.ent_pen_width.delete(0, tk.END); self.ent_pen_width.insert(0, state.get("pen_width", ""))
         self.ent_group_gap.delete(0, tk.END); self.ent_group_gap.insert(0, state.get("group_gap", ""))
-        self.txt_lines.delete("1.0", tk.END); self.txt_lines.insert("1.0", state.get("lines", ""))
-        self.txt_slants.delete("1.0", tk.END); self.txt_slants.insert("1.0", state.get("slants", ""))
+        
+        # Clear existing grids
+        for r in list(self.line_rows): self._delete_line_row(r)
+        for r in list(self.slant_rows): self._delete_slant_row(r)
+        
+        # Rebuild grids
+        for ld in state.get("lines", []): self._add_line_row(ld)
+        for sd in state.get("slants", []): self._add_slant_row(sd)
+        
         self.update_preview()
 
     def _parse_inputs_to_mm(self):
@@ -375,62 +491,43 @@ class CalligraphyApp(ctk.CTk):
         pen_width = self._parse_val(self.ent_pen_width.get())
         group_gap = self._parse_val(self.ent_group_gap.get())
         
-        if None in (pw, ph, margin_v, margin_h, pen_width, group_gap):
-            return None
-        if any(val <= 0 for val in [pw, ph, pen_width]) or margin_v < 0 or margin_h < 0 or group_gap < 0:
-            return None 
-            
-        def parse_dash(dash_str):
-            if dash_str.lower() in ["solid", ""]: return ()
-            try: return tuple(map(int, dash_str.split()))
-            except: return (4, 4)
+        if None in (pw, ph, margin_v, margin_h, pen_width, group_gap): return None
+        if any(val <= 0 for val in [pw, ph, pen_width]) or margin_v < 0 or margin_h < 0 or group_gap < 0: return None 
 
         lines_data, slants_data = [], []
         
-        for line in self.txt_lines.get("1.0", tk.END).split('\n'):
-            parts = [p.strip() for p in line.split(':')]
-            if len(parts) >= 2:
-                try:
-                    lw = self._parse_val(parts[2]) if len(parts) > 2 else 1.0
-                    if lw is None: continue
-                    lines_data.append({
-                        "name": parts[0], 
-                        "pos": float(parts[1]), # Relative ratio, purely unitless
-                        "lw": lw, 
-                        "dash": parse_dash(parts[3]) if len(parts) > 3 else (4, 4)
-                    })
-                except ValueError: continue
-                    
-        for line in self.txt_slants.get("1.0", tk.END).split('\n'):
-            parts = [p.strip() for p in line.split(':')]
-            if len(parts) >= 2:
-                try:
-                    spacing = self._parse_val(parts[1])
-                    if spacing is None or spacing <= 0: continue
-                    
-                    lw = self._parse_val(parts[2]) if len(parts) > 2 else 0.5
-                    if lw is None: continue
-                    
-                    slants_data.append({
-                        "angle": float(parts[0]), # Degrees, purely unitless
-                        "spacing": spacing, 
-                        "lw": lw, 
-                        "dash": parse_dash(parts[3]) if len(parts) > 3 else ()
-                    })
-                except ValueError: continue
+        for r in self.line_rows:
+            name = r["name"].get().strip()
+            if not name: continue
+            try:
+                pos = float(r["pos"].get()) # Relative unitless position
+                lw = self._parse_val(r["lw"].get())
+                if lw is None: continue
+                dash = CONFIG["style_map"].get(r["style"].get(), ())
+                lines_data.append({"name": name, "pos": pos, "lw": lw, "dash": dash})
+            except ValueError: continue
+            
+        for r in self.slant_rows:
+            try:
+                angle = float(r["angle"].get()) # Unitless degrees
+                spacing = self._parse_val(r["spacing"].get())
+                if spacing is None or spacing <= 0: continue
+                lw = self._parse_val(r["lw"].get())
+                if lw is None: continue
+                dash = CONFIG["style_map"].get(r["style"].get(), ())
+                slants_data.append({"angle": angle, "spacing": spacing, "lw": lw, "dash": dash})
+            except ValueError: continue
                     
         return pw, ph, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data
 
     # --- Live Preview Engine ---
 
     def _debounce_update(self, event=None):
-        if self._update_job is not None:
-            self.after_cancel(self._update_job)
+        if self._update_job is not None: self.after_cancel(self._update_job)
         self._update_job = self.after(300, self.update_preview)
 
     def _on_resize(self, event):
-        if event.widget == self:
-            self._debounce_update()
+        if event.widget == self: self._debounce_update()
 
     def update_preview(self):
         self.canvas.delete("all")
