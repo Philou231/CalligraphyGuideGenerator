@@ -1,13 +1,12 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition
------------------------------------------------
+Calligraphy Guide Sheet Generator - Pro Edition v2
+--------------------------------------------------
 Updates:
-- Per-row slants starting strictly at the left margin.
-- Individual line style controls (Width and Dash).
-- Auto-generated 'x' height markers.
-- Complete groups only, maximized to top margin.
-- Native Windows Print Dialog integration via Ghostscript.
-- Undo/Redo support and Zero-value crash protection.
+- Adjustable Paper Size (Width/Height in mm).
+- Independent Vertical and Horizontal Margins.
+- Paper-accurate Canvas Preview (white margins, fixed page bounds).
+- PostScript Dash Array scaling to match Tkinter's relative scaling.
+- Pure black lines everywhere, thinner black 'x' mark.
 """
 
 import tkinter as tk
@@ -24,15 +23,17 @@ import subprocess
 # Configuration & Defaults
 # -----------------------------------------------------------------------------
 CONFIG = {
-    "page_width_mm": 210.0,       # A4 Width
-    "page_height_mm": 297.0,      # A4 Height
     "mm_to_pts": 2.83465,         # PostScript points conversion factor
     
-    # Startup State
-    "default_margins": "15",      # Top, Bottom, Left, Right
+    # Startup State Defaults
+    "default_page_width": 210.0,
+    "default_page_height": 297.0,
+    "default_margin_v": 15.0,
+    "default_margin_h": 15.0,
     "default_pen_width": 2.0,
     "default_group_gap": 8.0,
-    # Format: Name : PenWidths : LineWidth : DashPattern (solid or space-separated numbers)
+    
+    # Format: Name : Position : LineWidth : DashPattern (solid or space-separated numbers)
     "default_lines": (
         "Ascender : 7 : 0.5 : 4 4\n"
         "X-Height : 5 : 0.5 : 4 4\n"
@@ -45,7 +46,7 @@ CONFIG = {
     # UI Styling
     "bg_color": "#242424",
     "page_color": "#FFFFFF",
-    "line_color": "#000000",
+    "line_color": "#000000",      # All lines are now perfectly black
 }
 
 try:
@@ -62,8 +63,8 @@ class CalligraphyApp(ctk.CTk):
         super().__init__()
         
         self.title("Calligraphy Guide Sheet Generator")
-        self.geometry("1200x850")
-        self.minsize(1000, 700)
+        self.geometry("1200x900")
+        self.minsize(1050, 750)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
@@ -74,7 +75,10 @@ class CalligraphyApp(ctk.CTk):
         self._build_canvas()
         
         self._set_ui_state({
-            "margin": CONFIG["default_margins"],
+            "page_width": str(CONFIG["default_page_width"]),
+            "page_height": str(CONFIG["default_page_height"]),
+            "margin_v": str(CONFIG["default_margin_v"]),
+            "margin_h": str(CONFIG["default_margin_h"]),
             "pen_width": str(CONFIG["default_pen_width"]),
             "group_gap": str(CONFIG["default_group_gap"]),
             "lines": CONFIG["default_lines"],
@@ -88,7 +92,7 @@ class CalligraphyApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         
-        self.sidebar_frame = ctk.CTkScrollableFrame(self, width=350, corner_radius=0)
+        self.sidebar_frame = ctk.CTkScrollableFrame(self, width=380, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=CONFIG["bg_color"])
@@ -100,44 +104,65 @@ class CalligraphyApp(ctk.CTk):
         lbl_title = ctk.CTkLabel(self.sidebar_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
         lbl_title.grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="w"); row_idx += 1
         
+        # --- Page & Margins ---
+        ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm)", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(5, 0), sticky="w"); row_idx += 1
+        frame_page = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        frame_page.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
+        
+        ctk.CTkLabel(frame_page, text="Page Width:").grid(row=0, column=0, sticky="w", pady=5)
+        self.ent_page_width = ctk.CTkEntry(frame_page, width=70)
+        self.ent_page_width.grid(row=0, column=1, sticky="e", pady=5)
+        self.ent_page_width.bind("<KeyRelease>", self._debounce_update)
+        
+        ctk.CTkLabel(frame_page, text="Page Height:").grid(row=0, column=2, sticky="w", padx=(15, 0), pady=5)
+        self.ent_page_height = ctk.CTkEntry(frame_page, width=70)
+        self.ent_page_height.grid(row=0, column=3, sticky="e", pady=5)
+        self.ent_page_height.bind("<KeyRelease>", self._debounce_update)
+
+        ctk.CTkLabel(frame_page, text="Vert. Margin:").grid(row=1, column=0, sticky="w", pady=5)
+        self.ent_margin_v = ctk.CTkEntry(frame_page, width=70)
+        self.ent_margin_v.grid(row=1, column=1, sticky="e", pady=5)
+        self.ent_margin_v.bind("<KeyRelease>", self._debounce_update)
+        
+        ctk.CTkLabel(frame_page, text="Horz. Margin:").grid(row=1, column=2, sticky="w", padx=(15, 0), pady=5)
+        self.ent_margin_h = ctk.CTkEntry(frame_page, width=70)
+        self.ent_margin_h.grid(row=1, column=3, sticky="e", pady=5)
+        self.ent_margin_h.bind("<KeyRelease>", self._debounce_update)
+
+        # --- Calligraphy Metrics ---
+        ctk.CTkLabel(self.sidebar_frame, text="Calligraphy Metrics (mm)", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
         frame_metrics = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         frame_metrics.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         
-        # Inputs
-        ctk.CTkLabel(frame_metrics, text="Margins (mm):").grid(row=0, column=0, sticky="w", pady=5)
-        self.ent_margin = ctk.CTkEntry(frame_metrics, width=80)
-        self.ent_margin.grid(row=0, column=1, sticky="e", pady=5)
-        self.ent_margin.bind("<KeyRelease>", self._debounce_update)
-
-        ctk.CTkLabel(frame_metrics, text="Pen Width (mm):").grid(row=1, column=0, sticky="w", pady=5)
-        self.ent_pen_width = ctk.CTkEntry(frame_metrics, width=80)
-        self.ent_pen_width.grid(row=1, column=1, sticky="e", pady=5)
+        ctk.CTkLabel(frame_metrics, text="Pen Width:").grid(row=0, column=0, sticky="w", pady=5)
+        self.ent_pen_width = ctk.CTkEntry(frame_metrics, width=70)
+        self.ent_pen_width.grid(row=0, column=1, sticky="e", pady=5)
         self.ent_pen_width.bind("<KeyRelease>", self._debounce_update)
         
-        ctk.CTkLabel(frame_metrics, text="Group Gap (mm):").grid(row=2, column=0, sticky="w", pady=5)
-        self.ent_group_gap = ctk.CTkEntry(frame_metrics, width=80)
-        self.ent_group_gap.grid(row=2, column=1, sticky="e", pady=5)
+        ctk.CTkLabel(frame_metrics, text="Group Gap:").grid(row=0, column=2, sticky="w", padx=(15, 0), pady=5)
+        self.ent_group_gap = ctk.CTkEntry(frame_metrics, width=70)
+        self.ent_group_gap.grid(row=0, column=3, sticky="e", pady=5)
         self.ent_group_gap.bind("<KeyRelease>", self._debounce_update)
         
-        # Horizontal Lines
+        # --- Horizontal Lines ---
         ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
-        ctk.CTkLabel(self.sidebar_frame, text="Format: Name : Position : LineWidth : Dash (e.g. 4 4 or solid)", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
+        ctk.CTkLabel(self.sidebar_frame, text="Format: Name : Position : LineWidth : Dash\nExample: Ascender : 7 : 0.5 : 4 4", justify="left", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
         
         self.txt_lines = ctk.CTkTextbox(self.sidebar_frame, height=120)
         self.txt_lines.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         self.txt_lines.bind("<KeyRelease>", self._debounce_update)
-        self.txt_lines._textbox.configure(undo=True) # Enable Undo/Redo
+        self.txt_lines._textbox.configure(undo=True)
         
-        # Slants
+        # --- Slants ---
         ctk.CTkLabel(self.sidebar_frame, text="Slant Overlays", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
-        ctk.CTkLabel(self.sidebar_frame, text="Format: Angle° : Spacing : LineWidth : Dash", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
+        ctk.CTkLabel(self.sidebar_frame, text="Format: Angle° : Spacing : LineWidth : Dash\nExample: 10 : 15 : 0.3 : solid", justify="left", font=ctk.CTkFont(size=11, slant="italic")).grid(row=row_idx, column=0, padx=20, sticky="w"); row_idx += 1
         
         self.txt_slants = ctk.CTkTextbox(self.sidebar_frame, height=80)
         self.txt_slants.grid(row=row_idx, column=0, padx=20, pady=5, sticky="ew"); row_idx += 1
         self.txt_slants.bind("<KeyRelease>", self._debounce_update)
-        self.txt_slants._textbox.configure(undo=True) # Enable Undo/Redo
+        self.txt_slants._textbox.configure(undo=True)
         
-        # Actions
+        # --- Actions ---
         frame_actions = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         frame_actions.grid(row=row_idx, column=0, padx=20, pady=30, sticky="ew"); row_idx += 1
         frame_actions.grid_columnconfigure(0, weight=1)
@@ -156,7 +181,10 @@ class CalligraphyApp(ctk.CTk):
 
     def _get_ui_state(self):
         return {
-            "margin": self.ent_margin.get().strip(),
+            "page_width": self.ent_page_width.get().strip(),
+            "page_height": self.ent_page_height.get().strip(),
+            "margin_v": self.ent_margin_v.get().strip(),
+            "margin_h": self.ent_margin_h.get().strip(),
             "pen_width": self.ent_pen_width.get().strip(),
             "group_gap": self.ent_group_gap.get().strip(),
             "lines": self.txt_lines.get("1.0", tk.END).strip(),
@@ -164,7 +192,10 @@ class CalligraphyApp(ctk.CTk):
         }
 
     def _set_ui_state(self, state):
-        self.ent_margin.delete(0, tk.END); self.ent_margin.insert(0, state.get("margin", ""))
+        self.ent_page_width.delete(0, tk.END); self.ent_page_width.insert(0, state.get("page_width", ""))
+        self.ent_page_height.delete(0, tk.END); self.ent_page_height.insert(0, state.get("page_height", ""))
+        self.ent_margin_v.delete(0, tk.END); self.ent_margin_v.insert(0, state.get("margin_v", ""))
+        self.ent_margin_h.delete(0, tk.END); self.ent_margin_h.insert(0, state.get("margin_h", ""))
         self.ent_pen_width.delete(0, tk.END); self.ent_pen_width.insert(0, state.get("pen_width", ""))
         self.ent_group_gap.delete(0, tk.END); self.ent_group_gap.insert(0, state.get("group_gap", ""))
         self.txt_lines.delete("1.0", tk.END); self.txt_lines.insert("1.0", state.get("lines", ""))
@@ -173,10 +204,13 @@ class CalligraphyApp(ctk.CTk):
 
     def _parse_inputs(self):
         try:
-            margin = float(self.ent_margin.get())
+            pw = float(self.ent_page_width.get())
+            ph = float(self.ent_page_height.get())
+            margin_v = float(self.ent_margin_v.get())
+            margin_h = float(self.ent_margin_h.get())
             pen_width = float(self.ent_pen_width.get())
             group_gap = float(self.ent_group_gap.get())
-            if pen_width <= 0 or margin < 0 or group_gap < 0:
+            if any(val <= 0 for val in [pw, ph, pen_width]) or margin_v < 0 or margin_h < 0 or group_gap < 0:
                 return None
         except ValueError:
             return None 
@@ -213,7 +247,7 @@ class CalligraphyApp(ctk.CTk):
                 except ValueError:
                     continue
                     
-        return margin, pen_width, group_gap, lines_data, slants_data
+        return pw, ph, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data
 
     # --- Live Preview Engine ---
 
@@ -233,81 +267,83 @@ class CalligraphyApp(ctk.CTk):
             
         parsed = self._parse_inputs()
         if not parsed: return
-        margin, pen_width, group_gap, lines_data, slants_data = parsed
+        page_width, page_height, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data = parsed
         
         pad = 20
-        scale = min((ch - pad*2) / CONFIG["page_height_mm"], (cw - pad*2) / CONFIG["page_width_mm"])
-        offset_x = (cw - (CONFIG["page_width_mm"] * scale)) / 2
-        offset_y = (ch - (CONFIG["page_height_mm"] * scale)) / 2
+        scale = min((ch - pad*2) / page_height, (cw - pad*2) / page_width)
+        offset_x = (cw - (page_width * scale)) / 2
+        offset_y = (ch - (page_height * scale)) / 2
         
         def map_c(x_mm, y_mm): return offset_x + (x_mm * scale), offset_y + (y_mm * scale)
 
-        # Draw Page
+        # 1. Draw Physical Paper Base (White)
         p_x1, p_y1 = map_c(0, 0)
-        p_x2, p_y2 = map_c(CONFIG["page_width_mm"], CONFIG["page_height_mm"])
-        self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="#111111")
+        p_x2, p_y2 = map_c(page_width, page_height)
+        self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="")
         
-        if not lines_data: return
-        
-        pw_values = [ld["pos"] for ld in lines_data]
-        max_pw, min_pw = max(pw_values), min(pw_values)
-        group_h_mm = (max_pw - min_pw) * pen_width
-        
-        # Calculate Group Math
-        base_y_mm = margin + (max_pw * pen_width)
-        
-        while base_y_mm - (max_pw * pen_width) + group_h_mm <= CONFIG["page_height_mm"] - margin:
-            top_y_mm = base_y_mm - (max_pw * pen_width)
-            bottom_y_mm = base_y_mm - (min_pw * pen_width)
+        if lines_data:
+            pw_values = [ld["pos"] for ld in lines_data]
+            max_pw, min_pw = max(pw_values), min(pw_values)
+            group_h_mm = (max_pw - min_pw) * pen_width
             
-            # 1. Draw Slants (Per Group)
-            for s in slants_data:
-                rad = math.radians(s["angle"])
-                dx_spacing = s["spacing"] / math.cos(rad) if math.cos(rad) != 0 else s["spacing"]
-                dx_offset = group_h_mm * math.tan(rad)
+            base_y_mm = margin_v + (max_pw * pen_width)
+            
+            # Loop per Group
+            while base_y_mm - (max_pw * pen_width) + group_h_mm <= page_height - margin_v:
+                top_y_mm = base_y_mm - (max_pw * pen_width)
+                bottom_y_mm = base_y_mm - (min_pw * pen_width)
                 
-                x_curr = margin
-                while x_curr <= CONFIG["page_width_mm"] - margin:
-                    pt1 = map_c(x_curr, bottom_y_mm)
-                    pt2 = map_c(x_curr + dx_offset, top_y_mm)
-                    self.canvas.create_line(*pt1, *pt2, fill="#C0C0C0", width=max(1, s["lw"]*scale), dash=s["dash"])
-                    x_curr += dx_spacing
+                # 2. Draw Slants
+                for s in slants_data:
+                    rad = math.radians(s["angle"])
+                    dx_spacing = s["spacing"] / math.cos(rad) if math.cos(rad) != 0 else s["spacing"]
+                    dx_offset = group_h_mm * math.tan(rad)
+                    
+                    # Ensure first visible line starts exactly at margin_h
+                    x_curr = margin_h if dx_offset >= 0 else margin_h - dx_offset
+                    
+                    while min(x_curr, x_curr + dx_offset) <= page_width - margin_h:
+                        pt1 = map_c(x_curr, bottom_y_mm)
+                        pt2 = map_c(x_curr + dx_offset, top_y_mm)
+                        self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], width=max(1, s["lw"]*scale), dash=s["dash"])
+                        x_curr += dx_spacing
 
-            # 2. Draw Horizontal Lines
-            y_base, y_xheight = None, None
-            for ld in lines_data:
-                y_line = base_y_mm - (ld["pos"] * pen_width)
-                x1, y1 = map_c(margin, y_line)
-                x2, y2 = map_c(CONFIG["page_width_mm"] - margin, y_line)
-                self.canvas.create_line(x1, y1, x2, y2, fill=CONFIG["line_color"], dash=ld["dash"], width=max(1, ld["lw"]*scale))
-                
-                if ld["name"].lower() == "base": y_base = y_line
-                if ld["name"].lower() == "x-height": y_xheight = y_line
+                # 3. Draw Horizontal Lines
+                y_base, y_xheight = None, None
+                for ld in lines_data:
+                    y_line = base_y_mm - (ld["pos"] * pen_width)
+                    x1, y1 = map_c(margin_h, y_line)
+                    x2, y2 = map_c(page_width - margin_h, y_line)
+                    self.canvas.create_line(x1, y1, x2, y2, fill=CONFIG["line_color"], dash=ld["dash"], width=max(1, ld["lw"]*scale))
+                    
+                    if ld["name"].lower() == "base": y_base = y_line
+                    if ld["name"].lower() == "x-height": y_xheight = y_line
 
-            # 3. Draw "x" marker
-            if y_base is not None and y_xheight is not None:
-                mid_y = (y_base + y_xheight) / 2
-                h = abs(y_base - y_xheight) * 0.5
-                
-                # Start slightly to the right of the margin so it's readable
-                x_start_mm = margin + 1 
-                x_start, m_y = map_c(x_start_mm, mid_y)
-                scaled_h = h * scale
-                
-                self.canvas.create_line(x_start, m_y - scaled_h/2, x_start + scaled_h, m_y + scaled_h/2, fill="#FF0000", width=max(1, scale*0.5))
-                self.canvas.create_line(x_start, m_y + scaled_h/2, x_start + scaled_h, m_y - scaled_h/2, fill="#FF0000", width=max(1, scale*0.5))
+                # 4. Draw Black, Thinner "x" marker
+                if y_base is not None and y_xheight is not None:
+                    mid_y = (y_base + y_xheight) / 2
+                    h = abs(y_base - y_xheight) * 0.5
+                    
+                    x_start_mm = margin_h + 1 
+                    x_start, m_y = map_c(x_start_mm, mid_y)
+                    scaled_h = h * scale
+                    
+                    # Thin, pure black marker
+                    self.canvas.create_line(x_start, m_y - scaled_h/2, x_start + scaled_h, m_y + scaled_h/2, fill=CONFIG["line_color"], width=1)
+                    self.canvas.create_line(x_start, m_y + scaled_h/2, x_start + scaled_h, m_y - scaled_h/2, fill=CONFIG["line_color"], width=1)
 
-            # Move to next group
-            base_y_mm += group_h_mm + group_gap
+                base_y_mm += group_h_mm + group_gap
 
-        # Mask margins visually
-        mask_color = CONFIG["bg_color"]
-        m_x1, m_y1 = map_c(margin, margin)
-        m_x2, m_y2 = map_c(CONFIG["page_width_mm"] - margin, CONFIG["page_height_mm"] - margin)
-        self.canvas.create_rectangle(0, 0, cw, m_y1, fill=mask_color, outline="")
-        self.canvas.create_rectangle(0, m_y2, cw, ch, fill=mask_color, outline="")
-        self.canvas.create_rectangle(0, 0, m_x1, ch, fill=mask_color, outline="")
-        self.canvas.create_rectangle(m_x2, 0, cw, ch, fill=mask_color, outline="")
+        # 5. Mask Margins (Draw white rectangles over horizontal/slant spillover)
+        m_x1, m_y1 = map_c(margin_h, margin_v)
+        m_x2, m_y2 = map_c(page_width - margin_h, page_height - margin_v)
+        
+        # Left and Right Masks (White)
+        self.canvas.create_rectangle(p_x1, p_y1, m_x1, p_y2, fill=CONFIG["page_color"], outline="")
+        self.canvas.create_rectangle(m_x2, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="")
+        
+        # Finally, draw a subtle border around the physical paper edge
+        self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill="", outline="#888888")
 
 
     # --- PostScript Generation ---
@@ -315,11 +351,11 @@ class CalligraphyApp(ctk.CTk):
     def generate_postscript_string(self):
         parsed = self._parse_inputs()
         if not parsed: raise ValueError("Invalid parameters.")
-        margin, pen_width, group_gap, lines_data, slants_data = parsed
+        page_width, page_height, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data = parsed
         
         state_json = json.dumps(self._get_ui_state())
-        width_pts = CONFIG["page_width_mm"] * CONFIG["mm_to_pts"]
-        height_pts = CONFIG["page_height_mm"] * CONFIG["mm_to_pts"]
+        width_pts = page_width * CONFIG["mm_to_pts"]
+        height_pts = page_height * CONFIG["mm_to_pts"]
         
         ps = [
             "%!PS-Adobe-3.0",
@@ -334,9 +370,11 @@ class CalligraphyApp(ctk.CTk):
             ""
         ]
 
-        def format_dash(dash_tuple):
+        def format_dash(dash_tuple, line_width):
+            """Scales the PostScript point dash array by the line width to match Tkinter's relative behavior."""
             if not dash_tuple: return "[] 0 setdash"
-            return f"[{' '.join(map(str, dash_tuple))}] 0 setdash"
+            scaled_dashes = [str(d * line_width) for d in dash_tuple]
+            return f"[{' '.join(scaled_dashes)}] 0 setdash"
 
         if not lines_data:
             ps.append("showpage")
@@ -345,36 +383,36 @@ class CalligraphyApp(ctk.CTk):
         pw_values = [ld["pos"] for ld in lines_data]
         max_pw, min_pw = max(pw_values), min(pw_values)
         group_h_mm = (max_pw - min_pw) * pen_width
-        base_y_mm = margin + (max_pw * pen_width)
+        base_y_mm = margin_v + (max_pw * pen_width)
         
-        # Clipping path for margins
+        # Clipping path for physical margins
         ps.extend([
             "gsave",
             "newpath",
-            f"{margin} mm {margin} mm moveto",
-            f"{CONFIG['page_width_mm'] - margin} mm {margin} mm lineto",
-            f"{CONFIG['page_width_mm'] - margin} mm {CONFIG['page_height_mm'] - margin} mm lineto",
-            f"{margin} mm {CONFIG['page_height_mm'] - margin} mm lineto",
+            f"{margin_h} mm {margin_v} mm moveto",
+            f"{page_width - margin_h} mm {margin_v} mm lineto",
+            f"{page_width - margin_h} mm {page_height - margin_v} mm lineto",
+            f"{margin_h} mm {page_height - margin_v} mm lineto",
             "closepath clip"
         ])
 
-        while base_y_mm - (max_pw * pen_width) + group_h_mm <= CONFIG["page_height_mm"] - margin:
+        while base_y_mm - (max_pw * pen_width) + group_h_mm <= page_height - margin_v:
             top_y_mm = base_y_mm - (max_pw * pen_width)
             bottom_y_mm = base_y_mm - (min_pw * pen_width)
             
-            ps_top_y = CONFIG["page_height_mm"] - top_y_mm
-            ps_bottom_y = CONFIG["page_height_mm"] - bottom_y_mm
+            ps_top_y = page_height - top_y_mm
+            ps_bottom_y = page_height - bottom_y_mm
 
-            # 1. Slants
+            # 1. Slants (Absolute Black: 0 setgray)
             for s in slants_data:
                 rad = math.radians(s["angle"])
                 dx_spacing = s["spacing"] / math.cos(rad) if math.cos(rad) != 0 else s["spacing"]
                 dx_offset = group_h_mm * math.tan(rad)
                 
-                ps.append(f"0.7 setgray {s['lw']} setlinewidth {format_dash(s['dash'])}")
+                ps.append(f"0 setgray {s['lw']} setlinewidth {format_dash(s['dash'], s['lw'])}")
                 
-                x_curr = margin
-                while x_curr <= CONFIG["page_width_mm"] - margin:
+                x_curr = margin_h if dx_offset >= 0 else margin_h - dx_offset
+                while min(x_curr, x_curr + dx_offset) <= page_width - margin_h:
                     ps.extend([
                         "newpath",
                         f"{x_curr:.2f} mm {ps_bottom_y:.2f} mm moveto",
@@ -383,31 +421,32 @@ class CalligraphyApp(ctk.CTk):
                     ])
                     x_curr += dx_spacing
 
-            # 2. Horizontal Lines
+            # 2. Horizontal Lines (Absolute Black: 0 setgray)
             y_base, y_xheight = None, None
             for ld in lines_data:
                 y_line_mm = base_y_mm - (ld["pos"] * pen_width)
-                ps_y = CONFIG["page_height_mm"] - y_line_mm
+                ps_y = page_height - y_line_mm
                 
-                ps.append(f"0 setgray {ld['lw']} setlinewidth {format_dash(ld['dash'])}")
+                ps.append(f"0 setgray {ld['lw']} setlinewidth {format_dash(ld['dash'], ld['lw'])}")
                 ps.extend([
                     "newpath",
-                    f"{margin} mm {ps_y:.2f} mm moveto",
-                    f"{CONFIG['page_width_mm'] - margin} mm {ps_y:.2f} mm lineto",
+                    f"{margin_h} mm {ps_y:.2f} mm moveto",
+                    f"{page_width - margin_h} mm {ps_y:.2f} mm lineto",
                     "stroke"
                 ])
                 
                 if ld["name"].lower() == "base": y_base = y_line_mm
                 if ld["name"].lower() == "x-height": y_xheight = y_line_mm
 
-            # 3. 'x' Marker
+            # 3. 'x' Marker (Black and thin)
             if y_base is not None and y_xheight is not None:
                 mid_y = (y_base + y_xheight) / 2
                 h = abs(y_base - y_xheight) * 0.5
-                ps_mid = CONFIG["page_height_mm"] - mid_y
-                x_start = margin + 1
+                ps_mid = page_height - mid_y
+                x_start = margin_h + 1
                 
-                ps.append("1 0 0 setrgbcolor 0.5 setlinewidth [] 0 setdash") # Red color
+                # 0 setgray = black. 0.2 line width makes it very thin.
+                ps.append("0 setgray 0.2 setlinewidth [] 0 setdash") 
                 ps.extend([
                     "newpath",
                     f"{x_start:.2f} mm {(ps_mid - h/2):.2f} mm moveto",
@@ -449,7 +488,6 @@ class CalligraphyApp(ctk.CTk):
                 messagebox.showwarning("Warning", "No metadata found.")
 
     def _find_ghostscript(self):
-        """Hunts the Windows registry/directories for Ghostscript execution paths."""
         paths = [r"C:\Program Files\gs", r"C:\Program Files (x86)\gs"]
         for base in paths:
             if os.path.exists(base):
@@ -478,7 +516,6 @@ class CalligraphyApp(ctk.CTk):
         with open(temp_path, 'w') as f:
             f.write(ps_code)
             
-        # -sDEVICE=mswinpr2 tells Ghostscript to open the standard Windows Print Dialog.
         try:
             subprocess.run([gs_path, "-sDEVICE=mswinpr2", "-dBATCH", "-dNOPAUSE", temp_path], check=True)
         except subprocess.CalledProcessError as e:
