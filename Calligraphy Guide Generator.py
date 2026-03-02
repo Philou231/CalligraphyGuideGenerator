@@ -1,10 +1,10 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition v4
+Calligraphy Guide Sheet Generator - Pro Edition v5
 --------------------------------------------------
 Updates:
-- Unit Toggle (mm / in) with clean conversion formatting.
-- Refactored Architecture (MVC): Geometry engine extracted.
-- DRY Principle: Display and PS Generation use the exact same calculation engine.
+- Single-button Unit Toggle (mm / in).
+- MVC Architecture implementation to prevent compounding precision loss.
+- Pure backend state maintains perfect mathematical accuracy during UI swaps.
 """
 
 import tkinter as tk
@@ -24,7 +24,7 @@ CONFIG = {
     "mm_to_pts": 72.0 / 25.4,
     "in_to_mm": 25.4,
     
-    # Defaults (Internally structured as mm)
+    # Defaults (Internally structured strictly in mm)
     "default_page_width": 215.9,
     "default_page_height": 279.4,
     "default_margin_v":  5.0,
@@ -56,25 +56,21 @@ except Exception:
 # -----------------------------------------------------------------------------
 
 class RenderData:
-    """Pure data container holding calculated coordinates (always in mm)."""
     def __init__(self, page_width, page_height, margin_v, margin_h):
         self.page_width = page_width
         self.page_height = page_height
         self.margin_v = margin_v
         self.margin_h = margin_h
         
-        self.slants = []       # list of (x1, y1, x2, y2, lw, dash)
-        self.horizontals = []  # list of (y, lw, dash)
-        self.markers = []      # list of (x_center, y_center, h_mm)
+        self.slants = []
+        self.horizontals = []
+        self.markers = []
 
 class GeometryEngine:
-    """Calculates all math strictly in mm ONCE. Eliminates duplicated rendering logic."""
     @staticmethod
     def calculate(page_width, page_height, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data):
         rd = RenderData(page_width, page_height, margin_v, margin_h)
-        
-        if not lines_data:
-            return rd
+        if not lines_data: return rd
 
         pw_values = [ld["pos"] for ld in lines_data]
         max_pw, min_pw = max(pw_values), min(pw_values)
@@ -88,9 +84,9 @@ class GeometryEngine:
         x_start_mm = margin_h + 1.0
         if xheight_pos is not None:
             h_mm = abs(base_pos - xheight_pos) * pen_width * 0.5
-            slant_anchor_x_mm = x_start_mm + h_mm + 1.0
+            slant_anchor_x_mm = x_start_mm + h_mm + 4.0
         else:
-            slant_anchor_x_mm = margin_h + 0.01
+            slant_anchor_x_mm = margin_h + 5.0
 
         current_top_y_mm = margin_v
         
@@ -141,7 +137,6 @@ class GeometryEngine:
         return rd
 
 class PostScriptExporter:
-    """Takes a RenderData object and produces standard PostScript output."""
     @staticmethod
     def generate(render_data, state_json):
         rd = render_data
@@ -165,7 +160,6 @@ class PostScriptExporter:
             if not dash_tuple: return "[] 0 setdash"
             return f"[{' '.join(map(str, dash_tuple))}] 0 setdash"
 
-        # Margin Clipping
         ps.extend([
             "gsave", "newpath",
             f"{rd.margin_h:.4f} mm {rd.margin_v:.4f} mm moveto",
@@ -175,7 +169,6 @@ class PostScriptExporter:
             "closepath clip"
         ])
 
-        # Draw Slants
         for (x_top, y_top, x_bot, y_bot, lw, dash) in rd.slants:
             ps.append(f"0 setgray {lw:.4f} setlinewidth {format_dash(dash)}")
             ps.extend([
@@ -185,7 +178,6 @@ class PostScriptExporter:
                 "stroke"
             ])
 
-        # Draw Horizontals
         for (y, lw, dash) in rd.horizontals:
             ps.append(f"0 setgray {lw:.4f} setlinewidth {format_dash(dash)}")
             ps.extend([
@@ -195,7 +187,6 @@ class PostScriptExporter:
                 "stroke"
             ])
 
-        # Draw Markers
         ps.append("0 setgray 0.2 setlinewidth [] 0 setdash") 
         for (x_c, y_c, h) in rd.markers:
             ps_y_c = rd.page_height - y_c
@@ -228,12 +219,15 @@ class CalligraphyApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
         
         self.current_unit = "mm"
+        self.backend_state = None
+        self._is_toggling = False
         self._update_job = None
         
         self._setup_layout()
         self._build_sidebar()
         self._build_canvas()
         
+        # Bootstrap default state
         self._set_ui_state({
             "unit": "mm",
             "page_width": str(CONFIG["default_page_width"]),
@@ -252,25 +246,23 @@ class CalligraphyApp(ctk.CTk):
     def _setup_layout(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
         self.sidebar_frame = ctk.CTkScrollableFrame(self, width=380, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=CONFIG["bg_color"])
         self.main_frame.grid(row=0, column=1, sticky="nsew")
 
     def _build_sidebar(self):
         row_idx = 0
         
-        # Header & Unit Toggle
         header_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         header_frame.grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="ew"); row_idx += 1
         header_frame.grid_columnconfigure(0, weight=1)
         
         ctk.CTkLabel(header_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, sticky="w")
-        self.seg_units = ctk.CTkSegmentedButton(header_frame, values=["mm", "in"], command=self._toggle_units)
-        self.seg_units.set("mm")
-        self.seg_units.grid(row=0, column=1, sticky="e")
+        
+        # Single toggle button implementation
+        self.btn_unit = ctk.CTkButton(header_frame, text=f"Unit: {self.current_unit}", command=self._swap_units, width=80, fg_color="#444444", hover_color="#333333")
+        self.btn_unit.grid(row=0, column=1, sticky="e")
         
         # --- Page & Margins ---
         self.lbl_page = ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm)", font=ctk.CTkFont(weight="bold"))
@@ -352,52 +344,48 @@ class CalligraphyApp(ctk.CTk):
     # --- Unit Conversion Logic ---
 
     def _fmt_num(self, val):
-        """Formats numbers cleanly, stripping unnecessary trailing zeros/decimals."""
         v = round(val, 4)
         return str(int(v)) if v == int(v) else str(v)
 
-    def _toggle_units(self, new_unit):
-        if new_unit == self.current_unit: return
+    def _swap_units(self):
+        if not self.backend_state: return 
+        self._is_toggling = True
         
-        factor = (1 / CONFIG["in_to_mm"]) if new_unit == "in" else CONFIG["in_to_mm"]
+        self.current_unit = "in" if self.current_unit == "mm" else "mm"
+        self.btn_unit.configure(text=f"Unit: {self.current_unit}")
         
-        def cvt(val_str):
-            try: return self._fmt_num(float(val_str) * factor)
-            except ValueError: return val_str
-
-        # Convert simple fields
-        fields = [self.ent_page_width, self.ent_page_height, self.ent_margin_v, 
-                  self.ent_margin_h, self.ent_pen_width, self.ent_group_gap]
-        for f in fields:
-            val = f.get()
-            f.delete(0, tk.END)
-            f.insert(0, cvt(val))
-
-        # Convert Textboxes (Lines: index 2 is LineWidth)
-        new_lines = []
-        for line in self.txt_lines.get("1.0", tk.END).split('\n'):
-            parts = [p.strip() for p in line.split(':')]
-            if len(parts) >= 3: parts[2] = cvt(parts[2])
-            if line.strip(): new_lines.append(" : ".join(parts))
-        self.txt_lines.delete("1.0", tk.END)
-        self.txt_lines.insert("1.0", "\n".join(new_lines))
-
-        # Convert Textboxes (Slants: index 1 is Spacing, index 2 is LineWidth)
-        new_slants = []
-        for line in self.txt_slants.get("1.0", tk.END).split('\n'):
-            parts = [p.strip() for p in line.split(':')]
-            if len(parts) >= 2: parts[1] = cvt(parts[1])
-            if len(parts) >= 3: parts[2] = cvt(parts[2])
-            if line.strip(): new_slants.append(" : ".join(parts))
-        self.txt_slants.delete("1.0", tk.END)
-        self.txt_slants.insert("1.0", "\n".join(new_slants))
-
-        # Update Labels
-        self.lbl_page.configure(text=f"Page & Layout ({new_unit})")
-        self.lbl_metrics.configure(text=f"Calligraphy Metrics ({new_unit})")
+        self._render_state_to_ui()
         
-        self.current_unit = new_unit
-        self._debounce_update()
+        self.lbl_page.configure(text=f"Page & Layout ({self.current_unit})")
+        self.lbl_metrics.configure(text=f"Calligraphy Metrics ({self.current_unit})")
+        
+        self.update_preview()
+        self._is_toggling = False
+
+    def _render_state_to_ui(self):
+        pw, ph, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data = self.backend_state
+        factor = (1 / CONFIG["in_to_mm"]) if self.current_unit == "in" else 1.0
+        
+        def cvt(val): return self._fmt_num(val * factor)
+
+        self.ent_page_width.delete(0, tk.END); self.ent_page_width.insert(0, cvt(pw))
+        self.ent_page_height.delete(0, tk.END); self.ent_page_height.insert(0, cvt(ph))
+        self.ent_margin_v.delete(0, tk.END); self.ent_margin_v.insert(0, cvt(margin_v))
+        self.ent_margin_h.delete(0, tk.END); self.ent_margin_h.insert(0, cvt(margin_h))
+        self.ent_pen_width.delete(0, tk.END); self.ent_pen_width.insert(0, cvt(pen_width))
+        self.ent_group_gap.delete(0, tk.END); self.ent_group_gap.insert(0, cvt(group_gap))
+
+        lines_text = []
+        for ld in lines_data:
+            dash_str = " ".join(map(str, ld['dash'])) if ld['dash'] else "solid"
+            lines_text.append(f"{ld['name']} : {self._fmt_num(ld['pos'])} : {cvt(ld['lw'])} : {dash_str}")
+        self.txt_lines.delete("1.0", tk.END); self.txt_lines.insert("1.0", "\n".join(lines_text))
+
+        slants_text = []
+        for sd in slants_data:
+            dash_str = " ".join(map(str, sd['dash'])) if sd['dash'] else "solid"
+            slants_text.append(f"{self._fmt_num(sd['angle'])} : {cvt(sd['spacing'])} : {cvt(sd['lw'])} : {dash_str}")
+        self.txt_slants.delete("1.0", tk.END); self.txt_slants.insert("1.0", "\n".join(slants_text))
 
     # --- Data Parsing ---
 
@@ -416,8 +404,8 @@ class CalligraphyApp(ctk.CTk):
 
     def _set_ui_state(self, state):
         unit = state.get("unit", "mm")
-        self.seg_units.set(unit)
         self.current_unit = unit
+        self.btn_unit.configure(text=f"Unit: {unit}")
         self.lbl_page.configure(text=f"Page & Layout ({unit})")
         self.lbl_metrics.configure(text=f"Calligraphy Metrics ({unit})")
 
@@ -432,7 +420,6 @@ class CalligraphyApp(ctk.CTk):
         self.update_preview()
 
     def _parse_inputs_to_mm(self):
-        """Always converts UI inputs back to pure mm for the Geometry Engine."""
         factor = CONFIG["in_to_mm"] if self.current_unit == "in" else 1.0
         
         try:
@@ -460,7 +447,7 @@ class CalligraphyApp(ctk.CTk):
                 try:
                     lines_data.append({
                         "name": parts[0], 
-                        "pos": float(parts[1]), # Position is relative, do not convert
+                        "pos": float(parts[1]),
                         "lw": (float(parts[2]) * factor) if len(parts) > 2 else 1.0, 
                         "dash": parse_dash(parts[3]) if len(parts) > 3 else (4, 4)
                     })
@@ -473,7 +460,7 @@ class CalligraphyApp(ctk.CTk):
                     spacing = float(parts[1]) * factor
                     if spacing > 0:
                         slants_data.append({
-                            "angle": float(parts[0]), # Degrees, do not convert
+                            "angle": float(parts[0]),
                             "spacing": spacing, 
                             "lw": (float(parts[2]) * factor) if len(parts) > 2 else 0.5, 
                             "dash": parse_dash(parts[3]) if len(parts) > 3 else ()
@@ -498,13 +485,17 @@ class CalligraphyApp(ctk.CTk):
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         if cw <= 1 or ch <= 1: return
             
-        parsed = self._parse_inputs_to_mm()
+        if not self._is_toggling:
+            parsed = self._parse_inputs_to_mm()
+            if parsed: self.backend_state = parsed
+            else: return
+        else:
+            parsed = self.backend_state
+
         if not parsed: return
         
-        # 1. Fetch exact geometries from the central engine
         rd = GeometryEngine.calculate(*parsed)
         
-        # 2. Map standard mm values to screen pixels
         pad = 20
         scale = min((ch - pad*2) / rd.page_height, (cw - pad*2) / rd.page_width)
         offset_x = (cw - (rd.page_width * scale)) / 2
@@ -512,31 +503,24 @@ class CalligraphyApp(ctk.CTk):
         
         def map_c(x_mm, y_mm): return offset_x + (x_mm * scale), offset_y + (y_mm * scale)
 
-        # Draw Paper Base
         p_x1, p_y1 = map_c(0, 0)
         p_x2, p_y2 = map_c(rd.page_width, rd.page_height)
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="")
         
-        # Draw Slants
         for (x1, y1, x2, y2, lw, dash) in rd.slants:
-            pt1 = map_c(x1, y1)
-            pt2 = map_c(x2, y2)
+            pt1, pt2 = map_c(x1, y1), map_c(x2, y2)
             self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], width=max(1, lw*scale), dash=dash)
 
-        # Draw Horizontals
         for (y, lw, dash) in rd.horizontals:
-            pt1 = map_c(rd.margin_h, y)
-            pt2 = map_c(rd.page_width - rd.margin_h, y)
+            pt1, pt2 = map_c(rd.margin_h, y), map_c(rd.page_width - rd.margin_h, y)
             self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], dash=dash, width=max(1, lw*scale))
 
-        # Draw 'x' Markers
         for (x_c, y_c, h) in rd.markers:
             cx, cy = map_c(x_c, y_c)
             scaled_h = h * scale
             self.canvas.create_line(cx, cy - scaled_h/2, cx + scaled_h, cy + scaled_h/2, fill=CONFIG["line_color"], width=1)
             self.canvas.create_line(cx, cy + scaled_h/2, cx + scaled_h, cy - scaled_h/2, fill=CONFIG["line_color"], width=1)
 
-        # Mask Margins Visually
         m_x1, m_y1 = map_c(rd.margin_h, rd.margin_v)
         m_x2, m_y2 = map_c(rd.page_width - rd.margin_h, rd.page_height - rd.margin_v)
         self.canvas.create_rectangle(p_x1, p_y1, m_x1, p_y2, fill=CONFIG["page_color"], outline="")
@@ -548,6 +532,7 @@ class CalligraphyApp(ctk.CTk):
     def _get_render_data(self):
         parsed = self._parse_inputs_to_mm()
         if not parsed: raise ValueError("Invalid parameters.")
+        self.backend_state = parsed
         return GeometryEngine.calculate(*parsed)
 
     def save_postscript(self):
@@ -568,10 +553,8 @@ class CalligraphyApp(ctk.CTk):
         if filepath:
             with open(filepath, 'r') as f: content = f.read()
             match = re.search(r"% BEGIN_METADATA\n% (.*?)\n% END_METADATA", content)
-            if match:
-                self._set_ui_state(json.loads(match.group(1)))
-            else:
-                messagebox.showwarning("Warning", "No metadata found.")
+            if match: self._set_ui_state(json.loads(match.group(1)))
+            else: messagebox.showwarning("Warning", "No metadata found.")
 
     def print_postscript(self):
         try:
@@ -582,14 +565,9 @@ class CalligraphyApp(ctk.CTk):
             return
             
         paths = [r"C:\Program Files\gs", r"C:\Program Files (x86)\gs"]
-        gs_path = None
-        for base in paths:
-            if os.path.exists(base):
-                for folder in os.listdir(base):
-                    bin_path = os.path.join(base, folder, "bin")
-                    for exe in ["gswin64c.exe", "gswin32c.exe"]:
-                        exe_path = os.path.join(bin_path, exe)
-                        if os.path.exists(exe_path): gs_path = exe_path
+        gs_path = next((os.path.join(b, f, "bin", e) for b in paths if os.path.exists(b) 
+                        for f in os.listdir(b) for e in ["gswin64c.exe", "gswin32c.exe"] 
+                        if os.path.exists(os.path.join(b, f, "bin", e))), None)
         
         if not gs_path:
             messagebox.showerror("Ghostscript Required", "Could not locate Ghostscript installation.")
