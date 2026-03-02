@@ -1,10 +1,9 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition v7
---------------------------------------------------
+Calligraphy Guide Sheet Generator - Pro Edition v10
+---------------------------------------------------
 Updates:
-- UI Overhaul: Dynamic Data Grids (Spreadsheet style) replace raw text boxes.
-- Persistent Smart Parsing: Grid cells retain full 'in'/'mm' string intelligence.
-- Friendly Dropdowns: Dash patterns replaced with "Solid", "Dashed", "Dotted" menus.
+- Reverted dynamic dash scaling in Tkinter preview per user request.
+- Updated dash arrays to user's highly questionable (4, 1) and (1, 1) preferences.
 """
 
 import tkinter as tk
@@ -31,20 +30,19 @@ CONFIG = {
     "default_pen_width": "1.0",
     "default_group_gap": "5.0",
     
-    # Defaults now structured for the Grid UI
     "default_lines": [
-        {"name": "Ascender", "pos": "7", "lw": "0.10", "style": "Dashed"},
-        {"name": "X-Height", "pos": "5", "lw": "0.10", "style": "Dashed"},
+        {"name": "Ascender", "pos": "7", "lw": "0.10", "style": "Solid"},
+        {"name": "X-Height", "pos": "5", "lw": "0.10", "style": "Solid"},
         {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
-        {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Dashed"}
+        {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Solid"}
     ],
     "default_slants": [
-        {"angle": "10", "spacing": "0.25 in", "lw": "0.10", "style": "Dotted"}
+        {"angle": "10", "spacing": "5 mm", "lw": "0.10", "style": "Dotted"}
     ],
     
     "style_map": {
         "Solid": (),
-        "Dashed": (4, 4),
+        "Dashed": (4, 1),
         "Dotted": (1, 1)
     },
     
@@ -221,9 +219,13 @@ class CalligraphyApp(ctk.CTk):
         
         self.backend_state = None
         self._update_job = None
-        
         self.line_rows = []
         self.slant_rows = []
+        
+        self.zoom_level = 1.0
+        self.pan_x = 0
+        self.pan_y = 0
+        self._drag_data = {"x": 0, "y": 0}
         
         self._setup_layout()
         self._build_sidebar()
@@ -250,10 +252,11 @@ class CalligraphyApp(ctk.CTk):
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=CONFIG["bg_color"])
         self.main_frame.grid(row=0, column=1, sticky="nsew")
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(1, weight=1)
 
     def _build_sidebar(self):
         row_idx = 0
-        
         ctk.CTkLabel(self.sidebar_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="w"); row_idx += 1
         
         # --- Page & Margins ---
@@ -299,7 +302,6 @@ class CalligraphyApp(ctk.CTk):
         # --- Horizontal Lines Grid ---
         ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
         
-        # Header Row
         hdr_lines = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         hdr_lines.grid(row=row_idx, column=0, padx=20, pady=(5,0), sticky="ew"); row_idx += 1
         ctk.CTkLabel(hdr_lines, text="Name", width=100, anchor="w").grid(row=0, column=0, padx=2)
@@ -315,7 +317,6 @@ class CalligraphyApp(ctk.CTk):
         # --- Slants Grid ---
         ctk.CTkLabel(self.sidebar_frame, text="Slant Overlays", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
         
-        # Header Row
         hdr_slants = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         hdr_slants.grid(row=row_idx, column=0, padx=20, pady=(5,0), sticky="ew"); row_idx += 1
         ctk.CTkLabel(hdr_slants, text="Angle°", width=80, anchor="w").grid(row=0, column=0, padx=2)
@@ -338,10 +339,85 @@ class CalligraphyApp(ctk.CTk):
         ctk.CTkButton(frame_actions, text="🖨️ Print Now...", command=self.print_postscript, fg_color="#2E8B57", hover_color="#1E5C3A").grid(row=2, column=0, pady=(20, 5), sticky="ew")
 
     def _build_canvas(self):
-        self.main_frame.grid_columnconfigure(0, weight=1)
-        self.main_frame.grid_rowconfigure(0, weight=1)
+        self.toolbar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.toolbar.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 0))
+        
+        ctk.CTkLabel(self.toolbar, text="Preview Canvas", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
+        ctk.CTkLabel(self.toolbar, text="(Drag to pan, Scroll to zoom)", font=ctk.CTkFont(slant="italic", size=11), text_color="#AAAAAA").pack(side="left", padx=5)
+        
+        ctk.CTkButton(self.toolbar, text="⟲ Reset View", command=self._reset_zoom, width=80, fg_color="#444444", hover_color="#333333").pack(side="right", padx=5)
+        ctk.CTkButton(self.toolbar, text="🔍 +", command=self._zoom_in, width=40, fg_color="#444444", hover_color="#333333").pack(side="right", padx=5)
+        ctk.CTkButton(self.toolbar, text="🔍 -", command=self._zoom_out, width=40, fg_color="#444444", hover_color="#333333").pack(side="right", padx=5)
+
         self.canvas = tk.Canvas(self.main_frame, bg=CONFIG["bg_color"], highlightthickness=0)
-        self.canvas.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        self.canvas.grid(row=1, column=0, sticky="nsew", padx=20, pady=15)
+        
+        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.canvas.bind("<B1-Motion>", self._on_drag_motion)
+        
+        # Windows/Mac MouseWheel
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        # Linux MouseWheel
+        self.canvas.bind("<Button-4>", self._on_mousewheel)
+        self.canvas.bind("<Button-5>", self._on_mousewheel)
+
+    # --- Viewport Interactions ---
+
+    def _on_drag_start(self, event):
+        self._drag_data["x"] = event.x
+        self._drag_data["y"] = event.y
+
+    def _on_drag_motion(self, event):
+        dx = event.x - self._drag_data["x"]
+        dy = event.y - self._drag_data["y"]
+        self.pan_x += dx
+        self.pan_y += dy
+        self._drag_data["x"] = event.x
+        self._drag_data["y"] = event.y
+        self.update_preview()
+
+    def _on_mousewheel(self, event):
+        if event.num == 5 or event.delta < 0:
+            self._zoom_math(1 / 1.15, event.x, event.y)
+        if event.num == 4 or event.delta > 0:
+            self._zoom_math(1.15, event.x, event.y)
+
+    def _zoom_in(self):
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self._zoom_math(1.15, cw / 2, ch / 2)
+
+    def _zoom_out(self):
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self._zoom_math(1 / 1.15, cw / 2, ch / 2)
+
+    def _zoom_math(self, factor, mx, my):
+        if not self.backend_state: return
+        pw, ph = self.backend_state[0], self.backend_state[1]
+        
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        pad = 20
+        base_scale = min((ch - pad*2) / ph, (cw - pad*2) / pw)
+        
+        old_actual_scale = base_scale * self.zoom_level
+        old_offset_x = (cw - pw * old_actual_scale) / 2 + self.pan_x
+        old_offset_y = (ch - ph * old_actual_scale) / 2 + self.pan_y
+
+        self.zoom_level *= factor
+        new_actual_scale = base_scale * self.zoom_level
+
+        new_offset_x = mx - (mx - old_offset_x) * (new_actual_scale / old_actual_scale)
+        new_offset_y = my - (my - old_offset_y) * (new_actual_scale / old_actual_scale)
+
+        self.pan_x = new_offset_x - (cw - pw * new_actual_scale) / 2
+        self.pan_y = new_offset_y - (ch - ph * new_actual_scale) / 2
+
+        self.update_preview()
+
+    def _reset_zoom(self):
+        self.zoom_level = 1.0
+        self.pan_x = 0
+        self.pan_y = 0
+        self.update_preview()
 
     # --- Grid Dynamic Controls ---
 
@@ -473,11 +549,9 @@ class CalligraphyApp(ctk.CTk):
         self.ent_pen_width.delete(0, tk.END); self.ent_pen_width.insert(0, state.get("pen_width", ""))
         self.ent_group_gap.delete(0, tk.END); self.ent_group_gap.insert(0, state.get("group_gap", ""))
         
-        # Clear existing grids
         for r in list(self.line_rows): self._delete_line_row(r)
         for r in list(self.slant_rows): self._delete_slant_row(r)
         
-        # Rebuild grids
         for ld in state.get("lines", []): self._add_line_row(ld)
         for sd in state.get("slants", []): self._add_slant_row(sd)
         
@@ -500,7 +574,7 @@ class CalligraphyApp(ctk.CTk):
             name = r["name"].get().strip()
             if not name: continue
             try:
-                pos = float(r["pos"].get()) # Relative unitless position
+                pos = float(r["pos"].get())
                 lw = self._parse_val(r["lw"].get())
                 if lw is None: continue
                 dash = CONFIG["style_map"].get(r["style"].get(), ())
@@ -509,7 +583,7 @@ class CalligraphyApp(ctk.CTk):
             
         for r in self.slant_rows:
             try:
-                angle = float(r["angle"].get()) # Unitless degrees
+                angle = float(r["angle"].get())
                 spacing = self._parse_val(r["spacing"].get())
                 if spacing is None or spacing <= 0: continue
                 lw = self._parse_val(r["lw"].get())
@@ -541,11 +615,13 @@ class CalligraphyApp(ctk.CTk):
         rd = GeometryEngine.calculate(*self.backend_state)
         
         pad = 20
-        scale = min((ch - pad*2) / rd.page_height, (cw - pad*2) / rd.page_width)
-        offset_x = (cw - (rd.page_width * scale)) / 2
-        offset_y = (ch - (rd.page_height * scale)) / 2
+        base_scale = min((ch - pad*2) / rd.page_height, (cw - pad*2) / rd.page_width)
+        actual_scale = base_scale * self.zoom_level
         
-        def map_c(x_mm, y_mm): return offset_x + (x_mm * scale), offset_y + (y_mm * scale)
+        offset_x = (cw - (rd.page_width * actual_scale)) / 2 + self.pan_x
+        offset_y = (ch - (rd.page_height * actual_scale)) / 2 + self.pan_y
+        
+        def map_c(x_mm, y_mm): return offset_x + (x_mm * actual_scale), offset_y + (y_mm * actual_scale)
 
         p_x1, p_y1 = map_c(0, 0)
         p_x2, p_y2 = map_c(rd.page_width, rd.page_height)
@@ -553,15 +629,17 @@ class CalligraphyApp(ctk.CTk):
         
         for (x1, y1, x2, y2, lw, dash) in rd.slants:
             pt1, pt2 = map_c(x1, y1), map_c(x2, y2)
-            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], width=max(1, lw*scale), dash=dash)
+            # Reverted dynamic scaling here. Raw dash array used.
+            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], width=max(1, lw*actual_scale), dash=dash)
 
         for (y, lw, dash) in rd.horizontals:
             pt1, pt2 = map_c(rd.margin_h, y), map_c(rd.page_width - rd.margin_h, y)
-            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], dash=dash, width=max(1, lw*scale))
+            # Reverted dynamic scaling here. Raw dash array used.
+            self.canvas.create_line(*pt1, *pt2, fill=CONFIG["line_color"], dash=dash, width=max(1, lw*actual_scale))
 
         for (x_c, y_c, h) in rd.markers:
             cx, cy = map_c(x_c, y_c)
-            scaled_h = h * scale
+            scaled_h = h * actual_scale
             self.canvas.create_line(cx, cy - scaled_h/2, cx + scaled_h, cy + scaled_h/2, fill=CONFIG["line_color"], width=1)
             self.canvas.create_line(cx, cy + scaled_h/2, cx + scaled_h, cy - scaled_h/2, fill=CONFIG["line_color"], width=1)
 
