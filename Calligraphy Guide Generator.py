@@ -1,10 +1,10 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition v5
+Calligraphy Guide Sheet Generator - Pro Edition v6
 --------------------------------------------------
 Updates:
-- Single-button Unit Toggle (mm / in).
-- MVC Architecture implementation to prevent compounding precision loss.
-- Pure backend state maintains perfect mathematical accuracy during UI swaps.
+- Adobe-style Smart Input Parsing: Mix 'in', 'inch', '"', or 'mm' in any field.
+- Eradicated global unit toggle; the UI now respects granular, per-field strings.
+- Restored custom slant line clearance anchors (1.0mm and 0.01mm).
 """
 
 import tkinter as tk
@@ -24,13 +24,13 @@ CONFIG = {
     "mm_to_pts": 72.0 / 25.4,
     "in_to_mm": 25.4,
     
-    # Defaults (Internally structured strictly in mm)
-    "default_page_width": 215.9,
-    "default_page_height": 279.4,
-    "default_margin_v":  5.0,
-    "default_margin_h":  5.0,
-    "default_pen_width": 1.0,
-    "default_group_gap": 5.0,
+    # Startup State Defaults (Notice the mixed strings)
+    "default_page_width": "8.5 in",
+    "default_page_height": "11 in",
+    "default_margin_v":  "5 mm",
+    "default_margin_h":  "5 mm",
+    "default_pen_width": "1.0",      # defaults to mm
+    "default_group_gap": "5.0",      # defaults to mm
     
     "default_lines": (
         "Ascender : 7 : 0.10 : solid\n"
@@ -84,9 +84,9 @@ class GeometryEngine:
         x_start_mm = margin_h + 1.0
         if xheight_pos is not None:
             h_mm = abs(base_pos - xheight_pos) * pen_width * 0.5
-            slant_anchor_x_mm = x_start_mm + h_mm + 4.0
+            slant_anchor_x_mm = x_start_mm + h_mm + 1.0
         else:
-            slant_anchor_x_mm = margin_h + 5.0
+            slant_anchor_x_mm = margin_h + 0.01
 
         current_top_y_mm = margin_v
         
@@ -99,7 +99,6 @@ class GeometryEngine:
             if xheight_pos is not None:
                 y_xheight_mm = current_top_y_mm + (max_pw - xheight_pos) * pen_width
 
-            # 1. Slants
             for s in slants_data:
                 rad = math.radians(s["angle"])
                 spacing = s["spacing"]
@@ -121,12 +120,10 @@ class GeometryEngine:
                     if max(x_top, x_bottom) > margin_h and min(x_top, x_bottom) < page_width - margin_h:
                         rd.slants.append((x_top, top_y_mm, x_bottom, bottom_y_mm, s["lw"], s["dash"]))
 
-            # 2. Horizontal Lines
             for ld in lines_data:
                 y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_width
                 rd.horizontals.append((y_line, ld["lw"], ld["dash"]))
 
-            # 3. 'x' Marker
             if xheight_pos is not None:
                 mid_y_mm = (base_y_mm + y_xheight_mm) / 2.0
                 h_mm = abs(base_y_mm - y_xheight_mm) * 0.5
@@ -218,24 +215,20 @@ class CalligraphyApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
-        self.current_unit = "mm"
         self.backend_state = None
-        self._is_toggling = False
         self._update_job = None
         
         self._setup_layout()
         self._build_sidebar()
         self._build_canvas()
         
-        # Bootstrap default state
         self._set_ui_state({
-            "unit": "mm",
-            "page_width": str(CONFIG["default_page_width"]),
-            "page_height": str(CONFIG["default_page_height"]),
-            "margin_v": str(CONFIG["default_margin_v"]),
-            "margin_h": str(CONFIG["default_margin_h"]),
-            "pen_width": str(CONFIG["default_pen_width"]),
-            "group_gap": str(CONFIG["default_group_gap"]),
+            "page_width": CONFIG["default_page_width"],
+            "page_height": CONFIG["default_page_height"],
+            "margin_v": CONFIG["default_margin_v"],
+            "margin_h": CONFIG["default_margin_h"],
+            "pen_width": CONFIG["default_pen_width"],
+            "group_gap": CONFIG["default_group_gap"],
             "lines": CONFIG["default_lines"],
             "slants": CONFIG["default_slants"]
         })
@@ -254,18 +247,11 @@ class CalligraphyApp(ctk.CTk):
     def _build_sidebar(self):
         row_idx = 0
         
-        header_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        header_frame.grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="ew"); row_idx += 1
-        header_frame.grid_columnconfigure(0, weight=1)
-        
-        ctk.CTkLabel(header_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, sticky="w")
-        
-        # Single toggle button implementation
-        self.btn_unit = ctk.CTkButton(header_frame, text=f"Unit: {self.current_unit}", command=self._swap_units, width=80, fg_color="#444444", hover_color="#333333")
-        self.btn_unit.grid(row=0, column=1, sticky="e")
+        lbl_title = ctk.CTkLabel(self.sidebar_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
+        lbl_title.grid(row=row_idx, column=0, padx=20, pady=(20, 10), sticky="w"); row_idx += 1
         
         # --- Page & Margins ---
-        self.lbl_page = ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm)", font=ctk.CTkFont(weight="bold"))
+        self.lbl_page = ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm or in)", font=ctk.CTkFont(weight="bold"))
         self.lbl_page.grid(row=row_idx, column=0, padx=20, pady=(5, 0), sticky="w"); row_idx += 1
         
         frame_page = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -292,7 +278,7 @@ class CalligraphyApp(ctk.CTk):
         self.ent_margin_h.bind("<KeyRelease>", self._debounce_update)
 
         # --- Calligraphy Metrics ---
-        self.lbl_metrics = ctk.CTkLabel(self.sidebar_frame, text="Calligraphy Metrics (mm)", font=ctk.CTkFont(weight="bold"))
+        self.lbl_metrics = ctk.CTkLabel(self.sidebar_frame, text="Calligraphy Metrics (mm or in)", font=ctk.CTkFont(weight="bold"))
         self.lbl_metrics.grid(row=row_idx, column=0, padx=20, pady=(15, 0), sticky="w"); row_idx += 1
         
         frame_metrics = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -341,57 +327,25 @@ class CalligraphyApp(ctk.CTk):
         self.canvas = tk.Canvas(self.main_frame, bg=CONFIG["bg_color"], highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
 
-    # --- Unit Conversion Logic ---
+    # --- Data Parsing Engine ---
 
-    def _fmt_num(self, val):
-        v = round(val, 4)
-        return str(int(v)) if v == int(v) else str(v)
-
-    def _swap_units(self):
-        if not self.backend_state: return 
-        self._is_toggling = True
-        
-        self.current_unit = "in" if self.current_unit == "mm" else "mm"
-        self.btn_unit.configure(text=f"Unit: {self.current_unit}")
-        
-        self._render_state_to_ui()
-        
-        self.lbl_page.configure(text=f"Page & Layout ({self.current_unit})")
-        self.lbl_metrics.configure(text=f"Calligraphy Metrics ({self.current_unit})")
-        
-        self.update_preview()
-        self._is_toggling = False
-
-    def _render_state_to_ui(self):
-        pw, ph, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data = self.backend_state
-        factor = (1 / CONFIG["in_to_mm"]) if self.current_unit == "in" else 1.0
-        
-        def cvt(val): return self._fmt_num(val * factor)
-
-        self.ent_page_width.delete(0, tk.END); self.ent_page_width.insert(0, cvt(pw))
-        self.ent_page_height.delete(0, tk.END); self.ent_page_height.insert(0, cvt(ph))
-        self.ent_margin_v.delete(0, tk.END); self.ent_margin_v.insert(0, cvt(margin_v))
-        self.ent_margin_h.delete(0, tk.END); self.ent_margin_h.insert(0, cvt(margin_h))
-        self.ent_pen_width.delete(0, tk.END); self.ent_pen_width.insert(0, cvt(pen_width))
-        self.ent_group_gap.delete(0, tk.END); self.ent_group_gap.insert(0, cvt(group_gap))
-
-        lines_text = []
-        for ld in lines_data:
-            dash_str = " ".join(map(str, ld['dash'])) if ld['dash'] else "solid"
-            lines_text.append(f"{ld['name']} : {self._fmt_num(ld['pos'])} : {cvt(ld['lw'])} : {dash_str}")
-        self.txt_lines.delete("1.0", tk.END); self.txt_lines.insert("1.0", "\n".join(lines_text))
-
-        slants_text = []
-        for sd in slants_data:
-            dash_str = " ".join(map(str, sd['dash'])) if sd['dash'] else "solid"
-            slants_text.append(f"{self._fmt_num(sd['angle'])} : {cvt(sd['spacing'])} : {cvt(sd['lw'])} : {dash_str}")
-        self.txt_slants.delete("1.0", tk.END); self.txt_slants.insert("1.0", "\n".join(slants_text))
-
-    # --- Data Parsing ---
+    def _parse_val(self, val_str):
+        """Intelligently extracts mm conversions from mixed string formats."""
+        val_str = str(val_str).strip().lower()
+        if val_str.endswith(('in', 'inch', '"')):
+            num_str = re.sub(r'[a-z"]', '', val_str).strip()
+            try: return float(num_str) * CONFIG["in_to_mm"]
+            except ValueError: return None
+        elif val_str.endswith('mm'):
+            num_str = re.sub(r'mm', '', val_str).strip()
+            try: return float(num_str)
+            except ValueError: return None
+        else:
+            try: return float(val_str)
+            except ValueError: return None
 
     def _get_ui_state(self):
         return {
-            "unit": self.current_unit,
             "page_width": self.ent_page_width.get().strip(),
             "page_height": self.ent_page_height.get().strip(),
             "margin_v": self.ent_margin_v.get().strip(),
@@ -403,12 +357,6 @@ class CalligraphyApp(ctk.CTk):
         }
 
     def _set_ui_state(self, state):
-        unit = state.get("unit", "mm")
-        self.current_unit = unit
-        self.btn_unit.configure(text=f"Unit: {unit}")
-        self.lbl_page.configure(text=f"Page & Layout ({unit})")
-        self.lbl_metrics.configure(text=f"Calligraphy Metrics ({unit})")
-
         self.ent_page_width.delete(0, tk.END); self.ent_page_width.insert(0, state.get("page_width", ""))
         self.ent_page_height.delete(0, tk.END); self.ent_page_height.insert(0, state.get("page_height", ""))
         self.ent_margin_v.delete(0, tk.END); self.ent_margin_v.insert(0, state.get("margin_v", ""))
@@ -420,18 +368,16 @@ class CalligraphyApp(ctk.CTk):
         self.update_preview()
 
     def _parse_inputs_to_mm(self):
-        factor = CONFIG["in_to_mm"] if self.current_unit == "in" else 1.0
+        pw = self._parse_val(self.ent_page_width.get())
+        ph = self._parse_val(self.ent_page_height.get())
+        margin_v = self._parse_val(self.ent_margin_v.get())
+        margin_h = self._parse_val(self.ent_margin_h.get())
+        pen_width = self._parse_val(self.ent_pen_width.get())
+        group_gap = self._parse_val(self.ent_group_gap.get())
         
-        try:
-            pw = float(self.ent_page_width.get()) * factor
-            ph = float(self.ent_page_height.get()) * factor
-            margin_v = float(self.ent_margin_v.get()) * factor
-            margin_h = float(self.ent_margin_h.get()) * factor
-            pen_width = float(self.ent_pen_width.get()) * factor
-            group_gap = float(self.ent_group_gap.get()) * factor
-            if any(val <= 0 for val in [pw, ph, pen_width]) or margin_v < 0 or margin_h < 0 or group_gap < 0:
-                return None
-        except ValueError:
+        if None in (pw, ph, margin_v, margin_h, pen_width, group_gap):
+            return None
+        if any(val <= 0 for val in [pw, ph, pen_width]) or margin_v < 0 or margin_h < 0 or group_gap < 0:
             return None 
             
         def parse_dash(dash_str):
@@ -445,10 +391,12 @@ class CalligraphyApp(ctk.CTk):
             parts = [p.strip() for p in line.split(':')]
             if len(parts) >= 2:
                 try:
+                    lw = self._parse_val(parts[2]) if len(parts) > 2 else 1.0
+                    if lw is None: continue
                     lines_data.append({
                         "name": parts[0], 
-                        "pos": float(parts[1]),
-                        "lw": (float(parts[2]) * factor) if len(parts) > 2 else 1.0, 
+                        "pos": float(parts[1]), # Relative ratio, purely unitless
+                        "lw": lw, 
                         "dash": parse_dash(parts[3]) if len(parts) > 3 else (4, 4)
                     })
                 except ValueError: continue
@@ -457,14 +405,18 @@ class CalligraphyApp(ctk.CTk):
             parts = [p.strip() for p in line.split(':')]
             if len(parts) >= 2:
                 try:
-                    spacing = float(parts[1]) * factor
-                    if spacing > 0:
-                        slants_data.append({
-                            "angle": float(parts[0]),
-                            "spacing": spacing, 
-                            "lw": (float(parts[2]) * factor) if len(parts) > 2 else 0.5, 
-                            "dash": parse_dash(parts[3]) if len(parts) > 3 else ()
-                        })
+                    spacing = self._parse_val(parts[1])
+                    if spacing is None or spacing <= 0: continue
+                    
+                    lw = self._parse_val(parts[2]) if len(parts) > 2 else 0.5
+                    if lw is None: continue
+                    
+                    slants_data.append({
+                        "angle": float(parts[0]), # Degrees, purely unitless
+                        "spacing": spacing, 
+                        "lw": lw, 
+                        "dash": parse_dash(parts[3]) if len(parts) > 3 else ()
+                    })
                 except ValueError: continue
                     
         return pw, ph, margin_v, margin_h, pen_width, group_gap, lines_data, slants_data
@@ -485,16 +437,11 @@ class CalligraphyApp(ctk.CTk):
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         if cw <= 1 or ch <= 1: return
             
-        if not self._is_toggling:
-            parsed = self._parse_inputs_to_mm()
-            if parsed: self.backend_state = parsed
-            else: return
-        else:
-            parsed = self.backend_state
+        parsed = self._parse_inputs_to_mm()
+        if parsed: self.backend_state = parsed
+        else: return
 
-        if not parsed: return
-        
-        rd = GeometryEngine.calculate(*parsed)
+        rd = GeometryEngine.calculate(*self.backend_state)
         
         pad = 20
         scale = min((ch - pad*2) / rd.page_height, (cw - pad*2) / rd.page_width)
