@@ -9,9 +9,9 @@ import customtkinter as ctk
 import math
 import json
 import os
-import re
 import ctypes
 import subprocess
+import re
 
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
@@ -33,6 +33,7 @@ CONFIG = {
     "bg_color": "#242424",
     "page_color": "#FFFFFF",
     "default_line_color": "#A0C8E0", 
+    "default_dot_color": "#D3D3D3"
 }
 
 PRESETS = {
@@ -57,16 +58,6 @@ PRESETS = {
         ],
         "slants": [{"angle": "38", "spacing": "6 mm", "lw": "0.10", "style": "Dotted"}],
         "oval_enabled": True, "oval_top": "X-Height", "oval_bot": "Base", "oval_ratio": "0.4"
-    },
-    "Italic (5°)": {
-        "pen_width": "1.5", "group_gap": "4.0",
-        "lines": [
-            {"name": "Ascender", "pos": "10", "lw": "0.10", "style": "Solid"},
-            {"name": "X-Height", "pos": "5", "lw": "0.10", "style": "Solid"},
-            {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"}
-        ],
-        "slants": [{"angle": "5", "spacing": "10 mm", "lw": "0.10", "style": "Dashed"}],
-        "oval_enabled": False, "oval_top": "X-Height", "oval_bot": "Base", "oval_ratio": "0.5"
     }
 }
 
@@ -78,21 +69,28 @@ except Exception: pass
 # -----------------------------------------------------------------------------
 
 class RenderData:
-    def __init__(self, page_width, page_height, margin_v, margin_h, line_color):
+    def __init__(self, page_width, page_height, margin_v, margin_h, line_color, dot_color, show_center, dot_gap, dot_size, radial, radius):
         self.page_width = page_width
         self.page_height = page_height
         self.margin_v = margin_v
         self.margin_h = margin_h
         self.line_color = line_color
+        self.dot_color = dot_color
+        self.show_center = show_center
+        self.dot_gap = dot_gap
+        self.dot_size = dot_size
+        self.radial = radial
+        self.radius = radius
         self.slants = []
         self.horizontals = []
+        self.arcs = []
         self.ovals = [] 
         self.markers = []
 
 class GeometryEngine:
     @staticmethod
-    def calculate(pw, ph, mv, mh, pen_w, gap, lines, slants, oval_data, line_color):
-        rd = RenderData(pw, ph, mv, mh, line_color)
+    def calculate(pw, ph, mv, mh, pen_w, gap, lines, slants, oval_data, line_color, dot_color, show_center, dot_gap, dot_size, radial, radius):
+        rd = RenderData(pw, ph, mv, mh, line_color, dot_color, show_center, dot_gap, dot_size, radial, radius)
         if not lines: return rd
 
         pw_vals = [ld["pos"] for ld in lines]
@@ -104,83 +102,87 @@ class GeometryEngine:
         if "base" in pos_map: base_pos = pos_map["base"]
         if "x-height" in pos_map: xh_pos = pos_map["x-height"]
 
+        cx = pw / 2
+        cy = ph + radius if radial else 0
+
         current_top_y_mm = mv
         while current_top_y_mm + group_h_mm <= ph - mv:
             y_min = current_top_y_mm
             y_max = current_top_y_mm + group_h_mm
             base_y_mm = current_top_y_mm + (max_pw - base_pos) * pen_w
             
-            content_x_start = mh
-            if xh_pos is not None:
-                y_xh = current_top_y_mm + (max_pw - xh_pos) * pen_w
-                mid_y = (base_y_mm + y_xh) / 2.0
-                h_mm = abs(base_y_mm - y_xh) * 0.5
-                x_c = mh + 2.0 + h_mm / 2
-                rd.markers.append((x_c, mid_y, h_mm))
-                content_x_start = mh + 2.0 + h_mm + 2.0
-
-            x_min_clip = content_x_start
+            x_min_clip = mh
             x_max_clip = pw - mh
-            slant_anchor_x_mm = content_x_start + 1.0
             
-            o_top_y, o_bot_y, o_h, o_w = None, None, None, None
-            if oval_data["enabled"]:
-                t_pos = pos_map.get(oval_data["top"].lower())
-                b_pos = pos_map.get(oval_data["bot"].lower())
-                if t_pos is not None and b_pos is not None:
-                    o_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * pen_w
-                    o_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * pen_w
-                    o_h = o_bot_y - o_top_y
-                    o_w = o_h * oval_data["ratio"]
-
-            for s in slants:
-                rad = math.radians(s["angle"])
-                spacing = s["spacing"]
-                n_min = math.floor((x_min_clip - slant_anchor_x_mm) / spacing) - 2
-                n_max = math.ceil((x_max_clip - slant_anchor_x_mm) / spacing) + 2
+            if radial:
+                for ld in lines:
+                    y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
+                    r = cy - y_line
+                    rd.arcs.append((cx, cy, r, ld["lw"], ld["style"]))
                 
-                for n in range(n_min, n_max):
-                    x_cross = slant_anchor_x_mm + n * spacing
+                for s in slants:
+                    rad = math.radians(s["angle"])
+                    spacing_deg = (s["spacing"] / radius) * (180 / math.pi)
+                    n_lines = int((pw - 2*mh) / s["spacing"]) + 2
+                    start_angle = - (n_lines/2) * spacing_deg
                     
-                    x_top = x_cross + (base_y_mm - y_min) * math.tan(rad)
-                    x_bottom = x_cross + (base_y_mm - y_max) * math.tan(rad)
-                    
-                    p1_x, p1_y = x_top, y_min
-                    p2_x, p2_y = x_bottom, y_max
-                    
-                    if p1_x > p2_x:
-                        p1_x, p1_y, p2_x, p2_y = p2_x, p2_y, p1_x, p1_y
+                    for n in range(n_lines):
+                        current_angle = math.radians(start_angle + n * spacing_deg) + rad
+                        p1_x = cx + (cy - y_min) * math.tan(current_angle)
+                        p2_x = cx + (cy - y_max) * math.tan(current_angle)
                         
-                    if p2_x < x_min_clip or p1_x > x_max_clip:
-                        continue
-                        
-                    orig_p1_x, orig_p1_y = p1_x, p1_y
-                    orig_p2_x, orig_p2_y = p2_x, p2_y
-                    
-                    if p1_x < x_min_clip:
-                        if orig_p2_x != orig_p1_x:
-                            p1_y = orig_p1_y + (orig_p2_y - orig_p1_y) * (x_min_clip - orig_p1_x) / (orig_p2_x - orig_p1_x)
-                        p1_x = x_min_clip
-                    if p2_x > x_max_clip:
-                        if orig_p2_x != orig_p1_x:
-                            p2_y = orig_p1_y + (orig_p2_y - orig_p1_y) * (x_max_clip - orig_p1_x) / (orig_p2_x - orig_p1_x)
-                        p2_x = x_max_clip
-                        
-                    rd.slants.append((p1_x, p1_y, p2_x, p2_y, s["lw"], s["style"]))
-                        
-                    if o_w and o_h:
-                        cx = x_cross + (base_y_mm - (o_top_y + o_h/2)) * math.tan(rad)
-                        cy = o_top_y + o_h/2
-                        shear_offset = (o_h/2) * math.tan(rad)
-                        oval_x_min = cx - o_w/2 - abs(shear_offset)
-                        oval_x_max = cx + o_w/2 + abs(shear_offset)
-                        
-                        if oval_x_min >= x_min_clip and oval_x_max <= x_max_clip:
-                            rd.ovals.append((cx, cy, o_w, o_h, rad, 0.1))
+                        if min(p1_x, p2_x) < x_max_clip and max(p1_x, p2_x) > x_min_clip:
+                            rd.slants.append((p1_x, y_min, p2_x, y_max, s["lw"], s["style"]))
 
-            for ld in lines:
-                y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
-                rd.horizontals.append((y_line, ld["lw"], ld["style"]))
+            else:
+                for ld in lines:
+                    y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
+                    rd.horizontals.append((y_line, ld["lw"], ld["style"]))
+
+                slant_anchor_x_mm = x_min_clip + 1.0
+                o_top_y, o_bot_y, o_h, o_w = None, None, None, None
+                if oval_data["enabled"]:
+                    t_pos = pos_map.get(oval_data["top"].lower())
+                    b_pos = pos_map.get(oval_data["bot"].lower())
+                    if t_pos is not None and b_pos is not None:
+                        o_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * pen_w
+                        o_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * pen_w
+                        o_h = o_bot_y - o_top_y
+                        o_w = o_h * oval_data["ratio"]
+
+                for s in slants:
+                    rad = math.radians(s["angle"])
+                    spacing = s["spacing"]
+                    n_min = math.floor((x_min_clip - slant_anchor_x_mm) / spacing) - 2
+                    n_max = math.ceil((x_max_clip - slant_anchor_x_mm) / spacing) + 2
+                    
+                    for n in range(n_min, n_max):
+                        x_cross = slant_anchor_x_mm + n * spacing
+                        x_top = x_cross + (base_y_mm - y_min) * math.tan(rad)
+                        x_bottom = x_cross + (base_y_mm - y_max) * math.tan(rad)
+                        
+                        p1_x, p1_y, p2_x, p2_y = x_top, y_min, x_bottom, y_max
+                        if p1_x > p2_x: p1_x, p1_y, p2_x, p2_y = p2_x, p2_y, p1_x, p1_y
+                            
+                        if p2_x < x_min_clip or p1_x > x_max_clip: continue
+                            
+                        orig_p1_x, orig_p1_y, orig_p2_x, orig_p2_y = p1_x, p1_y, p2_x, p2_y
+                        
+                        if p1_x < x_min_clip:
+                            if orig_p2_x != orig_p1_x: p1_y = orig_p1_y + (orig_p2_y - orig_p1_y) * (x_min_clip - orig_p1_x) / (orig_p2_x - orig_p1_x)
+                            p1_x = x_min_clip
+                        if p2_x > x_max_clip:
+                            if orig_p2_x != orig_p1_x: p2_y = orig_p1_y + (orig_p2_y - orig_p1_y) * (x_max_clip - orig_p1_x) / (orig_p2_x - orig_p1_x)
+                            p2_x = x_max_clip
+                            
+                        rd.slants.append((p1_x, p1_y, p2_x, p2_y, s["lw"], s["style"]))
+                            
+                        if o_w and o_h:
+                            cx_o = x_cross + (base_y_mm - (o_top_y + o_h/2)) * math.tan(rad)
+                            cy_o = o_top_y + o_h/2
+                            shear_offset = (o_h/2) * math.tan(rad)
+                            if (cx_o - o_w/2 - abs(shear_offset)) >= x_min_clip and (cx_o + o_w/2 + abs(shear_offset)) <= x_max_clip:
+                                rd.ovals.append((cx_o, cy_o, o_w, o_h, rad, 0.1))
 
             current_top_y_mm += group_h_mm + gap
         return rd
@@ -198,12 +200,27 @@ class SvgExporter:
             f''
         ]
 
-        for (cx, cy, h) in rd.markers:
-            svg.append(f'<line x1="{cx-h/2}" y1="{cy-h/2}" x2="{cx+h/2}" y2="{cy+h/2}" stroke="{rd.line_color}" stroke-width="0.3" />')
-            svg.append(f'<line x1="{cx-h/2}" y1="{cy+h/2}" x2="{cx+h/2}" y2="{cy-h/2}" stroke="{rd.line_color}" stroke-width="0.3" />')
+        if rd.dot_gap > 0:
+            nx = int((rd.page_width - 2*rd.margin_h) / rd.dot_gap)
+            ny = int((rd.page_height - 2*rd.margin_v) / rd.dot_gap)
+            for i in range(nx + 1):
+                for j in range(ny + 1):
+                    x = rd.margin_h + i * rd.dot_gap
+                    y = rd.margin_v + j * rd.dot_gap
+                    svg.append(f'<circle cx="{x}" cy="{y}" r="{rd.dot_size}" fill="{rd.dot_color}" />')
+
+        if rd.show_center:
+            svg.append(f'<line x1="{rd.page_width/2}" y1="{rd.margin_v}" x2="{rd.page_width/2}" y2="{rd.page_height-rd.margin_v}" stroke="{rd.line_color}" stroke-width="0.2" stroke-dasharray="2 2" />')
 
         for (y, lw, style) in rd.horizontals:
             svg.append(f'<line x1="{rd.margin_h}" y1="{y}" x2="{rd.page_width - rd.margin_h}" y2="{y}" stroke="{rd.line_color}" stroke-width="{lw}" {dash_array(style)} />')
+
+        for (cx, cy, r, lw, style) in rd.arcs:
+            x1 = rd.margin_h
+            x2 = rd.page_width - rd.margin_h
+            y1 = cy - math.sqrt(max(0, r**2 - (cx - x1)**2))
+            y2 = cy - math.sqrt(max(0, r**2 - (x2 - cx)**2))
+            svg.append(f'<path d="M {x1} {y1} A {r} {r} 0 0 1 {x2} {y2}" fill="none" stroke="{rd.line_color}" stroke-width="{lw}" {dash_array(style)} />')
 
         for (x1, y1, x2, y2, lw, style) in rd.slants:
             svg.append(f'<line x1="{x2}" y1="{y2}" x2="{x1}" y2="{y1}" stroke="{rd.line_color}" stroke-width="{lw}" {dash_array(style)} />')
@@ -223,8 +240,8 @@ class SvgExporter:
 class CalligraphyApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Calligraphy Guide Sheet Generator - SVG Edition")
-        self.geometry("1400x950")
+        self.title("Calligraphy Guide Sheet Generator - Pro")
+        self.geometry("1450x950")
         ctk.set_appearance_mode("dark")
         
         self.backend_state = None
@@ -232,6 +249,7 @@ class CalligraphyApp(ctk.CTk):
         self.line_rows = []
         self.slant_rows = []
         self.current_line_color = CONFIG["default_line_color"]
+        self.current_dot_color = CONFIG["default_dot_color"]
         
         self.zoom_level = 1.0
         self.pan_x = 0; self.pan_y = 0
@@ -263,11 +281,30 @@ class CalligraphyApp(ctk.CTk):
         ctk.CTkLabel(hdr_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         ctk.CTkOptionMenu(hdr_frame, values=list(PRESETS.keys()), command=self.load_preset, width=150).pack(side="right")
         
-        color_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        color_frame.grid(row=r, column=0, padx=20, pady=5, sticky="ew"); r += 1
-        ctk.CTkLabel(color_frame, text="Line Color:").pack(side="left")
-        self.btn_color = ctk.CTkButton(color_frame, text=self.current_line_color, fg_color=self.current_line_color, text_color="black", width=100, command=self._pick_color)
-        self.btn_color.pack(side="right")
+        bg_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        bg_frame.grid(row=r, column=0, padx=20, pady=5, sticky="ew"); r += 1
+        
+        ctk.CTkLabel(bg_frame, text="Line Color:").grid(row=0, column=0, sticky="w", pady=2)
+        self.btn_color = ctk.CTkButton(bg_frame, text=self.current_line_color, fg_color=self.current_line_color, text_color="black", width=80, command=lambda: self._pick_color("line"))
+        self.btn_color.grid(row=0, column=1, padx=10, pady=2)
+        
+        ctk.CTkLabel(bg_frame, text="Dot Color:").grid(row=0, column=2, sticky="w", pady=2)
+        self.btn_dot_color = ctk.CTkButton(bg_frame, text=self.current_dot_color, fg_color=self.current_dot_color, text_color="black", width=80, command=lambda: self._pick_color("dot"))
+        self.btn_dot_color.grid(row=0, column=3, padx=10, pady=2)
+        
+        self.chk_center = ctk.CTkCheckBox(bg_frame, text="Center Line", command=self._debounce_update)
+        self.chk_center.grid(row=1, column=0, columnspan=2, sticky="w", pady=10)
+        
+        ctk.CTkLabel(bg_frame, text="Dot Grid (mm):").grid(row=1, column=2, sticky="w", pady=10)
+        self.ent_dot_gap = ctk.CTkEntry(bg_frame, width=50); self.ent_dot_gap.insert(0, "0")
+        self.ent_dot_gap.grid(row=1, column=3, sticky="w", padx=10, pady=10)
+
+        ctk.CTkLabel(bg_frame, text="Dot Size (mm):").grid(row=2, column=2, sticky="w", pady=(0, 10))
+        self.ent_dot_size = ctk.CTkEntry(bg_frame, width=50); self.ent_dot_size.insert(0, "0.2")
+        self.ent_dot_size.grid(row=2, column=3, sticky="w", padx=10, pady=(0, 10))
+
+        self.ent_dot_gap.bind("<KeyRelease>", self._debounce_update)
+        self.ent_dot_size.bind("<KeyRelease>", self._debounce_update)
 
         ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm or in)", font=ctk.CTkFont(weight="bold")).grid(row=r, column=0, padx=20, pady=(10, 0), sticky="w"); r += 1
         frame_page = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -301,7 +338,13 @@ class CalligraphyApp(ctk.CTk):
         ctk.CTkLabel(frame_metrics, text="Bot Line:").grid(row=2, column=2, sticky="w", padx=(10,0), pady=(5,0))
         self.ent_oval_bot = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_bot.grid(row=2, column=3, sticky="e", pady=(5,0))
         
-        for ent in [self.ent_pen, self.ent_gap, self.ent_oval_ratio, self.ent_oval_top, self.ent_oval_bot]: ent.bind("<KeyRelease>", self._debounce_update)
+        self.chk_radial = ctk.CTkCheckBox(frame_metrics, text="Envelope Mode (Radial)", command=self._debounce_update)
+        self.chk_radial.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10,0))
+        ctk.CTkLabel(frame_metrics, text="Radius(mm):").grid(row=3, column=2, sticky="w", padx=(10,0), pady=(10,0))
+        self.ent_radius = ctk.CTkEntry(frame_metrics, width=70); self.ent_radius.insert(0, "200")
+        self.ent_radius.grid(row=3, column=3, sticky="e", pady=(10,0))
+
+        for ent in [self.ent_pen, self.ent_gap, self.ent_oval_ratio, self.ent_oval_top, self.ent_oval_bot, self.ent_radius]: ent.bind("<KeyRelease>", self._debounce_update)
 
         ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines", font=ctk.CTkFont(weight="bold")).grid(row=r, column=0, padx=20, pady=(15, 0), sticky="w"); r += 1
         self.frame_lines_grid = ctk.CTkFrame(self.sidebar_frame, fg_color="#2B2B2B")
@@ -318,7 +361,7 @@ class CalligraphyApp(ctk.CTk):
         frame_actions.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(frame_actions, text="💾 Save SVG", command=self.save_svg, fg_color="#1E90FF").grid(row=0, column=0, pady=5, sticky="ew")
         ctk.CTkButton(frame_actions, text="📂 Load SVG", command=self.load_svg, fg_color="#555555").grid(row=1, column=0, pady=5, sticky="ew")
-        ctk.CTkButton(frame_actions, text="🖨️ Print (Inkscape CLI)", command=self.print_svg, fg_color="#2E8B57").grid(row=2, column=0, pady=(15, 5), sticky="ew")
+        ctk.CTkButton(frame_actions, text="🖨️ Print (PDF Handoff)", command=self.print_svg, fg_color="#2E8B57").grid(row=2, column=0, pady=(15, 5), sticky="ew")
 
     def _build_canvas(self):
         self.toolbar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -335,11 +378,16 @@ class CalligraphyApp(ctk.CTk):
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
 
     # --- Interaction & Presets ---
-    def _pick_color(self):
-        color = colorchooser.askcolor(title="Choose Line Color", initialcolor=self.current_line_color)[1]
+    def _pick_color(self, target):
+        init_color = self.current_line_color if target == "line" else self.current_dot_color
+        color = colorchooser.askcolor(title=f"Choose {target.title()} Color", initialcolor=init_color)[1]
         if color:
-            self.current_line_color = color
-            self.btn_color.configure(text=color, fg_color=color)
+            if target == "line":
+                self.current_line_color = color
+                self.btn_color.configure(text=color, fg_color=color)
+            else:
+                self.current_dot_color = color
+                self.btn_dot_color.configure(text=color, fg_color=color)
             self._debounce_update()
 
     def load_preset(self, preset_name):
@@ -429,7 +477,10 @@ class CalligraphyApp(ctk.CTk):
             "page_width": self.ent_pw.get().strip(), "page_height": self.ent_ph.get().strip(),
             "margin_v": self.ent_mv.get().strip(), "margin_h": self.ent_mh.get().strip(),
             "pen_width": self.ent_pen.get().strip(), "group_gap": self.ent_gap.get().strip(),
-            "line_color": self.current_line_color,
+            "line_color": self.current_line_color, "dot_color": self.current_dot_color,
+            "show_center": self.chk_center.get() == 1,
+            "dot_gap": self.ent_dot_gap.get().strip(), "dot_size": self.ent_dot_size.get().strip(),
+            "radial": self.chk_radial.get() == 1, "radius": self.ent_radius.get().strip(),
             "oval_enabled": self.chk_oval.get() == 1,
             "oval_ratio": self.ent_oval_ratio.get().strip(),
             "oval_top": self.ent_oval_top.get().strip(), "oval_bot": self.ent_oval_bot.get().strip(),
@@ -447,6 +498,16 @@ class CalligraphyApp(ctk.CTk):
             if "line_color" in state:
                 self.current_line_color = state["line_color"]
                 self.btn_color.configure(text=self.current_line_color, fg_color=self.current_line_color)
+            if "dot_color" in state:
+                self.current_dot_color = state["dot_color"]
+                self.btn_dot_color.configure(text=self.current_dot_color, fg_color=self.current_dot_color)
+            if state.get("show_center", False): self.chk_center.select()
+            else: self.chk_center.deselect()
+            if state.get("radial", False): self.chk_radial.select()
+            else: self.chk_radial.deselect()
+            set_ent(self.ent_dot_gap, "dot_gap")
+            set_ent(self.ent_dot_size, "dot_size")
+            set_ent(self.ent_radius, "radius")
 
         set_ent(self.ent_pen, "pen_width"); set_ent(self.ent_gap, "group_gap")
         
@@ -469,6 +530,9 @@ class CalligraphyApp(ctk.CTk):
         pw, ph = self._parse_val(self.ent_pw.get()), self._parse_val(self.ent_ph.get())
         mv, mh = self._parse_val(self.ent_mv.get()), self._parse_val(self.ent_mh.get())
         pen, gap = self._parse_val(self.ent_pen.get()), self._parse_val(self.ent_gap.get())
+        dot_gap = self._parse_val(self.ent_dot_gap.get()) or 0.0
+        dot_size = self._parse_val(self.ent_dot_size.get()) or 0.2
+        radius = self._parse_val(self.ent_radius.get()) or 200.0
         
         if None in (pw, ph, mv, mh, pen, gap) or any(v <= 0 for v in [pw, ph, pen]) or mv < 0 or mh < 0 or gap < 0: return None 
 
@@ -498,7 +562,7 @@ class CalligraphyApp(ctk.CTk):
                     s_data.append({"angle": float(r["angle"].get()), "spacing": spc, "lw": lw, "style": r["style"].get()})
             except ValueError: continue
                     
-        return pw, ph, mv, mh, pen, gap, l_data, s_data, oval_data, self.current_line_color
+        return pw, ph, mv, mh, pen, gap, l_data, s_data, oval_data, self.current_line_color, self.current_dot_color, self.chk_center.get() == 1, dot_gap, dot_size, self.chk_radial.get() == 1, radius
 
     # --- Live Preview Engine ---
     def _debounce_update(self, event=None):
@@ -526,14 +590,40 @@ class CalligraphyApp(ctk.CTk):
         def map_c(x, y): return ox + (x * sc), oy + (y * sc)
 
         p_x1, p_y1 = map_c(0, 0); p_x2, p_y2 = map_c(rd.page_width, rd.page_height)
+        m_x1, m_y1 = map_c(0, rd.margin_v); m_x2, m_y2 = map_c(0, rd.page_height - rd.margin_v)
         
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="")
         
-        for (cx, cy, h) in rd.markers:
-            scaled_h = h * sc
-            mx, my = map_c(cx, cy)
-            self.canvas.create_line(mx - scaled_h/2, my - scaled_h/2, mx + scaled_h/2, my + scaled_h/2, fill=rd.line_color, width=1)
-            self.canvas.create_line(mx - scaled_h/2, my + scaled_h/2, mx + scaled_h/2, my - scaled_h/2, fill=rd.line_color, width=1)
+        if rd.dot_gap > 0:
+            nx = int((rd.page_width - 2*rd.margin_h) / rd.dot_gap)
+            ny = int((rd.page_height - 2*rd.margin_v) / rd.dot_gap)
+            r_px = max(0.5, rd.dot_size * sc)
+            for i in range(nx + 1):
+                for j in range(ny + 1):
+                    x = rd.margin_h + i * rd.dot_gap
+                    y = rd.margin_v + j * rd.dot_gap
+                    mx, my = map_c(x, y)
+                    self.canvas.create_oval(mx-r_px, my-r_px, mx+r_px, my+r_px, fill=rd.dot_color, outline="")
+
+        if rd.show_center:
+            mx, _ = map_c(rd.page_width/2, 0)
+            self.canvas.create_line(mx, m_y1, mx, m_y2, fill=rd.line_color, dash=(4, 4))
+
+        for (cx, cy, r, lw, style) in rd.arcs:
+            cw_lw = max(1, lw * sc)
+            tk_dash = tuple(max(1, int((d * sc) / cw_lw)) for d in CONFIG["style_map_ui"].get(style, ())) if style != "Solid" else ()
+            
+            points = []
+            x_start = rd.margin_h
+            x_end = rd.page_width - rd.margin_h
+            steps = 40
+            for i in range(steps + 1):
+                px = x_start + (x_end - x_start) * (i / steps)
+                dx = px - cx
+                if abs(dx) <= r:
+                    py = cy - math.sqrt(r**2 - dx**2)
+                    points.extend(map_c(px, py))
+            self.canvas.create_line(points, fill=rd.line_color, width=cw_lw, dash=tk_dash)
 
         for (cx, cy, w, h, rad, lw) in rd.ovals:
             pts = []
@@ -558,7 +648,6 @@ class CalligraphyApp(ctk.CTk):
             self.canvas.create_line(*map_c(rd.margin_h, y), *map_c(rd.page_width - rd.margin_h, y), fill=rd.line_color, dash=tk_dash, width=cw_lw)
 
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill="", outline="#888888")
-
         self.canvas.create_rectangle(0, 0, cw, p_y1, fill=CONFIG["bg_color"], outline="") 
         self.canvas.create_rectangle(0, p_y2, cw, ch, fill=CONFIG["bg_color"], outline="") 
         self.canvas.create_rectangle(0, p_y1, p_x1, p_y2, fill=CONFIG["bg_color"], outline="") 
@@ -571,24 +660,39 @@ class CalligraphyApp(ctk.CTk):
         rd = GeometryEngine.calculate(*parsed)
         filepath = filedialog.asksaveasfilename(defaultextension=".svg", filetypes=[("SVG Vector", "*.svg")])
         if filepath:
-            with open(filepath, 'w') as f: f.write(SvgExporter.generate(rd, json.dumps(self._get_ui_state())))
+            with open(filepath, 'w', encoding="utf-8") as f: f.write(SvgExporter.generate(rd, json.dumps(self._get_ui_state())))
             messagebox.showinfo("Success", "SVG saved!")
 
     def load_svg(self):
         filepath = filedialog.askopenfilename(filetypes=[("SVG Vector", "*.svg")])
         if filepath:
-            with open(filepath, 'r') as f: content = f.read()
-            match = re.search(r"", content)
-            if match: self._set_ui_state(json.loads(match.group(1)))
-            else: messagebox.showwarning("Warning", "No metadata found.")
+            try:
+                with open(filepath, 'r', encoding="utf-8", errors="ignore") as f: content = f.read()
+                
+                start_tag = ""
+                start_idx = content.find(start_tag)
+                
+                if start_idx != -1:
+                    start_idx += len(start_tag)
+                    end_idx = content.find(end_tag, start_idx)
+                    if end_idx != -1:
+                        json_str = content[start_idx:end_idx].strip()
+                        self._set_ui_state(json.loads(json_str))
+                        return
+                        
+                messagebox.showwarning("Warning", "No readable metadata found in this file.")
+            except Exception as e:
+                messagebox.showerror("Parse Error", f"Failed to load file state.\n{e}")
 
     def print_svg(self):
         parsed = self._parse_inputs_to_mm()
         if not parsed: return messagebox.showerror("Error", "Invalid parameters.")
         rd = GeometryEngine.calculate(*parsed)
         
-        temp_path = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp_print.svg")
-        with open(temp_path, 'w') as f: f.write(SvgExporter.generate(rd, json.dumps(self._get_ui_state())))
+        temp_svg = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp.svg")
+        temp_pdf = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp.pdf")
+        
+        with open(temp_svg, 'w', encoding="utf-8") as f: f.write(SvgExporter.generate(rd, json.dumps(self._get_ui_state())))
             
         inkscape_cmd = "inkscape"
         if os.name == 'nt':
@@ -603,11 +707,14 @@ class CalligraphyApp(ctk.CTk):
                     break
 
         try:
-            subprocess.run([inkscape_cmd, "--actions=file-print", temp_path], check=True)
+            subprocess.run([inkscape_cmd, "--export-filename=" + temp_pdf, temp_svg], check=True, capture_output=True)
+            os.startfile(temp_pdf, "print")
         except FileNotFoundError:
             messagebox.showerror("Dependency Error", "Inkscape not found. Please verify your Inkscape installation or use 'Save SVG' and print manually.")
         except subprocess.CalledProcessError as e: 
-            messagebox.showerror("Print Cancelled", f"Process ended.\n{e}")
+            messagebox.showerror("Print Cancelled", f"Conversion process failed.\n{e.stderr.decode('utf-8') if e.stderr else e}")
+        except OSError as e:
+            messagebox.showerror("Print Failed", f"OS failed to print the PDF.\n{e}")
 
 if __name__ == "__main__":
     app = CalligraphyApp()
