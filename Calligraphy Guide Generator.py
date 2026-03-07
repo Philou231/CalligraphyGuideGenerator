@@ -27,13 +27,13 @@ CONFIG = {
     "default_pen_width": "1.0",
     "default_group_gap": "5.0",
     
-    "style_map_ui": {"Solid": (), "Dashed": (4, 1), "Dotted": (1, 1)},
-    "style_map_svg": {"Solid": (), "Dashed": (2, 1.5), "Dotted": (0.5, 1.5)},
+    "style_map_ui": {"Solid": (), "Dashed": (2, 1.5), "Dotted": (0.5, 0.5)},
+    "style_map_svg": {"Solid": (), "Dashed": (2, 1.5), "Dotted": (0.5, 0.5)},
     
     "bg_color": "#242424",
     "page_color": "#FFFFFF",
-    "default_line_color": "#A0C8E0", 
-    "default_dot_color": "#D3D3D3"
+    "default_line_color": "#808080", 
+    "default_dot_color": "#C0C0C0"
 }
 
 PRESETS = {
@@ -46,7 +46,7 @@ PRESETS = {
             {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
             {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Solid"}
         ],
-        "slants": [{"angle": "10", "spacing": "3.3 mm", "lw": "0.10", "style": "Dotted"}],
+        "slants": [{"angle": "10", "spacing": "3.3 mm", "lw": "0.10", "style": "Dashed"}],
         "oval_enabled": False, "oval_top": "X-Height", "oval_bot": "Base", "oval_ratio": "0.4"
     },
     "Copperplate (55°)": {
