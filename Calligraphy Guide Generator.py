@@ -37,6 +37,18 @@ CONFIG = {
 }
 
 PRESETS = {
+    "Italic (10°)": {
+        "pen_width": "1.0", "group_gap": "0.0",
+        "lines": [
+            {"name": "Ascender", "pos": "10", "lw": "0.10", "style": "Solid"},
+            {"name": "Capital", "pos": "7", "lw": "0.10", "style": "Solid"},
+            {"name": "X-Height", "pos": "5", "lw": "0.10", "style": "Solid"},
+            {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
+            {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Solid"}
+        ],
+        "slants": [{"angle": "10", "spacing": "3.3 mm", "lw": "0.10", "style": "Dotted"}],
+        "oval_enabled": False, "oval_top": "X-Height", "oval_bot": "Base", "oval_ratio": "0.4"
+    },
     "Copperplate (55°)": {
         "pen_width": "1.0", "group_gap": "5.0",
         "lines": [
