@@ -27,8 +27,8 @@ CONFIG = {
     "default_pen_width": "1.0",
     "default_group_gap": "5.0",
     
-    "style_map_ui": {"Solid": (), "Dashed": (2, 1.5), "Dotted": (0.5, 0.5)},
-    "style_map_svg": {"Solid": (), "Dashed": (2, 1.5), "Dotted": (0.5, 0.5)},
+    "style_map_ui": {"Solid": (), "Dashed": (1, 0.5), "Dotted": (0.5, 0.5)},
+    "style_map_svg": {"Solid": (), "Dashed": (1, 0.5), "Dotted": (0.5, 0.5)},
     
     "bg_color": "#242424",
     "page_color": "#FFFFFF",
