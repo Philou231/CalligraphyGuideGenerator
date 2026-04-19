@@ -46,7 +46,7 @@ PRESETS = {
             {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
             {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Solid"}
         ],
-        "slants": [{"angle": "10", "spacing": "3.3 mm", "lw": "0.10", "style": "Dashed"}],
+        "slants": [{"angle": "10", "spacing": "2.5 mm", "lw": "0.10", "style": "Dotted"}],
         "oval_enabled": False, "oval_top": "X-Height", "oval_bot": "Base", "oval_ratio": "0.4"
     },
     "Copperplate (55°)": {
@@ -147,6 +147,15 @@ class GeometryEngine:
                             rd.slants.append((p1_x, y_min, p2_x, y_max, s["lw"], s["style"]))
 
             else:
+                if xh_pos is not None:
+                    xh_y_mm = current_top_y_mm + (max_pw - xh_pos) * pen_w
+                    # Left margin marker
+                    rd.markers.append((x_min_clip, xh_y_mm))
+                    rd.markers.append((x_min_clip, base_y_mm))
+                    # Optional: Right margin marker
+                    rd.markers.append((x_max_clip, xh_y_mm))
+                    rd.markers.append((x_max_clip, base_y_mm))
+
                 for ld in lines:
                     y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
                     rd.horizontals.append((y_line, ld["lw"], ld["style"]))
@@ -201,47 +210,54 @@ class GeometryEngine:
 
 class SvgExporter:
     @staticmethod
-    def generate(rd, state_json):
-        def dash_array(style):
-            d = CONFIG["style_map_svg"].get(style, ())
-            return f'stroke-dasharray="{" ".join(map(str, d))}"' if d else ""
+    def generate(rd, json_str="{}"):
+        pw, ph = rd.page_width, rd.page_height
+        svg = []
+        
+        # Standard SVG Header
+        svg.append(f'<?xml version="1.0" encoding="UTF-8" standalone="no"?>')
+        svg.append(f'<svg width="{pw}mm" height="{ph}mm" viewBox="0 0 {pw} {ph}" xmlns="http://www.w3.org/2000/svg">')
+        
+        # === FIX: Embed JSON UI state into the SVG ===
+        # Storing it in a <desc> element ensures it doesn't render but is easy to parse on load.
+        svg.append(f'  <desc id="calligraphy-metadata">{json_str}</desc>')
+        
+        # Background
+        svg.append(f'  <rect width="{pw}" height="{ph}" fill="none"/>')
 
-        svg = [
-            f'<?xml version="1.0" encoding="UTF-8"?>',
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{rd.page_width}mm" height="{rd.page_height}mm" viewBox="0 0 {rd.page_width} {rd.page_height}">',
-            f''
-        ]
+        # Map Line Styles
+        def get_dash(style):
+            if style == "Dashed": return 'stroke-dasharray="2, 1"'
+            if style == "Dotted": return 'stroke-dasharray="1, 1"'
+            return ''
 
-        if rd.dot_gap > 0:
-            nx = int((rd.page_width - 2*rd.margin_h) / rd.dot_gap)
-            ny = int((rd.page_height - 2*rd.margin_v) / rd.dot_gap)
-            for i in range(nx + 1):
-                for j in range(ny + 1):
-                    x = rd.margin_h + i * rd.dot_gap
-                    y = rd.margin_v + j * rd.dot_gap
-                    svg.append(f'<circle cx="{x}" cy="{y}" r="{rd.dot_size}" fill="{rd.dot_color}" />')
-
-        if rd.show_center:
-            svg.append(f'<line x1="{rd.page_width/2}" y1="{rd.margin_v}" x2="{rd.page_width/2}" y2="{rd.page_height-rd.margin_v}" stroke="{rd.line_color}" stroke-width="0.2" stroke-dasharray="2 2" />')
-
-        for (y, lw, style) in rd.horizontals:
-            svg.append(f'<line x1="{rd.margin_h}" y1="{y}" x2="{rd.page_width - rd.margin_h}" y2="{y}" stroke="{rd.line_color}" stroke-width="{lw}" {dash_array(style)} />')
-
-        for (cx, cy, r, lw, style) in rd.arcs:
-            x1 = rd.margin_h
-            x2 = rd.page_width - rd.margin_h
-            y1 = cy - math.sqrt(max(0, r**2 - (cx - x1)**2))
-            y2 = cy - math.sqrt(max(0, r**2 - (x2 - cx)**2))
-            svg.append(f'<path d="M {x1} {y1} A {r} {r} 0 0 1 {x2} {y2}" fill="none" stroke="{rd.line_color}" stroke-width="{lw}" {dash_array(style)} />')
-
-        for (x1, y1, x2, y2, lw, style) in rd.slants:
-            svg.append(f'<line x1="{x2}" y1="{y2}" x2="{x1}" y2="{y1}" stroke="{rd.line_color}" stroke-width="{lw}" {dash_array(style)} />')
-
-        for (cx, cy, w, h, rad, lw) in rd.ovals:
+        # 1. Horizontals
+        for y, lw, style in rd.horizontals:
+            svg.append(f'  <line x1="{rd.margin_h}" y1="{y}" x2="{pw - rd.margin_h}" y2="{y}" '
+                       f'stroke="{rd.line_color}" stroke-width="{lw}" {get_dash(style)}/>')
+        
+        # 2. Slants
+        for x1, y1, x2, y2, lw, style in rd.slants:
+            svg.append(f'  <line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
+                       f'stroke="{rd.line_color}" stroke-width="{lw}" {get_dash(style)}/>')
+            
+        # 3. Ovals
+        for cx, cy, w, h, rad, lw in rd.ovals:
             deg = math.degrees(rad)
             transform = f'transform="translate({cx} {cy}) skewX({-deg}) translate({-cx} {-cy})"'
-            svg.append(f'<ellipse cx="{cx}" cy="{cy}" rx="{w/2}" ry="{h/2}" fill="none" stroke="{rd.line_color}" stroke-width="{lw}" {transform} />')
-
+            svg.append(f'  <ellipse cx="{cx}" cy="{cy}" rx="{w/2}" ry="{h/2}" '
+                       f'stroke="{rd.line_color}" stroke-width="{lw}" fill="none" {transform}/>')
+            
+        # === FIX: Render the X-Height Cross Markers ===
+        m_size = 1.5  # Size of the cross marker in mm
+        for mx, my in rd.markers:
+            # Horizontal stroke of the cross
+            svg.append(f'  <line x1="{mx - m_size}" y1="{my}" x2="{mx + m_size}" y2="{my}" '
+                       f'stroke="{rd.line_color}" stroke-width="0.3"/>')
+            # Vertical stroke of the cross
+            svg.append(f'  <line x1="{mx}" y1="{my - m_size}" x2="{mx}" y2="{my + m_size}" '
+                       f'stroke="{rd.line_color}" stroke-width="0.3"/>')
+            
         svg.append('</svg>')
         return "\n".join(svg)
 
@@ -271,7 +287,7 @@ class CalligraphyApp(ctk.CTk):
         self._build_sidebar()
         self._build_canvas()
         
-        self.load_preset("Copperplate (55°)")
+        self.load_preset("Italic (10°)")
         self.bind("<Configure>", self._on_resize)
         self.after(200, self.update_preview)
 
@@ -681,7 +697,8 @@ class CalligraphyApp(ctk.CTk):
             try:
                 with open(filepath, 'r', encoding="utf-8", errors="ignore") as f: content = f.read()
                 
-                start_tag = ""
+                start_tag = '<desc id="calligraphy-metadata">'
+                end_tag = '</desc>'
                 start_idx = content.find(start_tag)
                 
                 if start_idx != -1:
