@@ -389,7 +389,7 @@ class CalligraphyApp(ctk.CTk):
         frame_actions.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(frame_actions, text="💾 Save SVG", command=self.save_svg, fg_color="#1E90FF").grid(row=0, column=0, pady=5, sticky="ew")
         ctk.CTkButton(frame_actions, text="📂 Load SVG", command=self.load_svg, fg_color="#555555").grid(row=1, column=0, pady=5, sticky="ew")
-        ctk.CTkButton(frame_actions, text="🖨️ Print (PDF Handoff)", command=self.print_svg, fg_color="#2E8B57").grid(row=2, column=0, pady=(15, 5), sticky="ew")
+        ctk.CTkButton(frame_actions, text="🖨️ Print", command=self.print_svg, fg_color="#2E8B57").grid(row=2, column=0, pady=(15, 5), sticky="ew")
 
     def _build_canvas(self):
         self.toolbar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -737,13 +737,23 @@ class CalligraphyApp(ctk.CTk):
 
         try:
             subprocess.run([inkscape_cmd, "--export-filename=" + temp_pdf, temp_svg], check=True, capture_output=True)
-            os.startfile(temp_pdf, "print")
         except FileNotFoundError:
             messagebox.showerror("Dependency Error", "Inkscape not found. Please verify your Inkscape installation or use 'Save SVG' and print manually.")
         except subprocess.CalledProcessError as e: 
             messagebox.showerror("Print Cancelled", f"Conversion process failed.\n{e.stderr.decode('utf-8') if e.stderr else e}")
-        except OSError as e:
-            messagebox.showerror("Print Failed", f"OS failed to print the PDF.\n{e}")
+
+        sumatra_path = r".\SumatraPDF-3.6.1-64.exe"
+        try:
+            if os.path.exists(sumatra_path):
+                # -print-to-default prints silently to the default OS printer
+                # -silent prevents UI from flashing
+                subprocess.run([sumatra_path, "-print-to-default", "-silent", temp_pdf], check=True)
+            else:
+                # Fallback if Sumatra isn't found
+                os.startfile(temp_pdf)
+        except Exception as e:
+            print(f"Printing failed: {e}")
+
 
 if __name__ == "__main__":
     app = CalligraphyApp()
