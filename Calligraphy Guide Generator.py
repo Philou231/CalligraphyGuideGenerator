@@ -1,6 +1,6 @@
 """
-Calligraphy Guide Sheet Generator - Pro Edition
------------------------------------------------
+Calligraphy Guide Sheet Generator
+---------------------------------
 """
 
 import tkinter as tk
@@ -12,6 +12,8 @@ import os
 import ctypes
 import subprocess
 import re
+from dataclasses import dataclass, field
+from typing import List, Tuple, Dict, Optional
 
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
@@ -80,62 +82,68 @@ except Exception: pass
 # Core Architecture: Data & Engine
 # -----------------------------------------------------------------------------
 
+@dataclass
+class GridConfig:
+    pw: float; ph: float; mv: float; mh: float
+    pen_w: float; gap: float
+    lines: List[Dict]; slants: List[Dict]; oval_data: Dict
+    line_color: str; dot_color: str
+    show_center: bool; show_x_marker: bool; dot_gap: float; dot_size: float
+    radial: bool; radius: float
+
+@dataclass
 class RenderData:
-    def __init__(self, page_width, page_height, margin_v, margin_h, line_color, dot_color, show_center, dot_gap, dot_size, radial, radius):
-        self.page_width = page_width
-        self.page_height = page_height
-        self.margin_v = margin_v
-        self.margin_h = margin_h
-        self.line_color = line_color
-        self.dot_color = dot_color
-        self.show_center = show_center
-        self.dot_gap = dot_gap
-        self.dot_size = dot_size
-        self.radial = radial
-        self.radius = radius
-        self.slants = []
-        self.horizontals = []
-        self.arcs = []
-        self.ovals = [] 
-        self.markers = []
+    page_width: float
+    page_height: float
+    margin_v: float
+    margin_h: float
+    line_color: str
+    dot_color: str
+    show_center: bool
+    dot_gap: float
+    dot_size: float
+    radial: bool
+    radius: float
+    slants: List[Tuple] = field(default_factory=list)
+    horizontals: List[Tuple] = field(default_factory=list)
+    arcs: List[Tuple] = field(default_factory=list)
+    ovals: List[Tuple] = field(default_factory=list) 
+    markers: List[Tuple] = field(default_factory=list)
 
 class GeometryEngine:
     @staticmethod
-    def calculate(pw, ph, mv, mh, pen_w, gap, lines, slants, oval_data, line_color, dot_color, show_center, dot_gap, dot_size, radial, radius):
-        rd = RenderData(pw, ph, mv, mh, line_color, dot_color, show_center, dot_gap, dot_size, radial, radius)
-        if not lines: return rd
+    def calculate(c: GridConfig) -> RenderData:
+        rd = RenderData(c.pw, c.ph, c.mv, c.mh, c.line_color, c.dot_color, 
+                        c.show_center, c.dot_gap, c.dot_size, c.radial, c.radius)
+        if not c.lines: return rd
 
-        pw_vals = [ld["pos"] for ld in lines]
+        pw_vals = [ld["pos"] for ld in c.lines]
         max_pw, min_pw = max(pw_vals), min(pw_vals)
-        group_h_mm = (max_pw - min_pw) * pen_w
+        group_h_mm = (max_pw - min_pw) * c.pen_w
         
-        base_pos, xh_pos = 0.0, None
-        pos_map = {ld["name"].lower(): ld["pos"] for ld in lines}
-        if "base" in pos_map: base_pos = pos_map["base"]
-        if "x-height" in pos_map: xh_pos = pos_map["x-height"]
+        pos_map = {ld["name"].lower(): ld["pos"] for ld in c.lines}
+        
+        cx = c.pw / 2
+        cy = c.ph + c.radius if c.radial else 0
 
-        cx = pw / 2
-        cy = ph + radius if radial else 0
-
-        current_top_y_mm = mv
-        while current_top_y_mm + group_h_mm <= ph - mv:
+        current_top_y_mm = c.mv
+        while current_top_y_mm + group_h_mm <= c.ph - c.mv:
             y_min = current_top_y_mm
             y_max = current_top_y_mm + group_h_mm
-            base_y_mm = current_top_y_mm + (max_pw - base_pos) * pen_w
             
-            x_min_clip = mh
-            x_max_clip = pw - mh
+            x_min_clip = c.mh
+            x_max_clip = c.pw - c.mh
             
-            if radial:
-                for ld in lines:
-                    y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
+            if c.radial:
+                for ld in c.lines:
+                    y_line = current_top_y_mm + (max_pw - ld["pos"]) * c.pen_w
                     r = cy - y_line
                     rd.arcs.append((cx, cy, r, ld["lw"], ld["style"]))
                 
-                for s in slants:
+                for s in c.slants:
                     rad = math.radians(s["angle"])
-                    spacing_deg = (s["spacing"] / radius) * (180 / math.pi)
-                    n_lines = int((pw - 2*mh) / s["spacing"]) + 2
+                    spacing_deg = (s["spacing"] / c.radius) * (180 / math.pi)
+                    n_lines = int((c.pw - 2*c.mh) / s["spacing"]) + 2
                     start_angle = - (n_lines/2) * spacing_deg
                     
                     for n in range(n_lines):
@@ -147,42 +155,41 @@ class GeometryEngine:
                             rd.slants.append((p1_x, y_min, p2_x, y_max, s["lw"], s["style"]))
 
             else:
-                # Use the "Top Line" and "Bot Line" UI inputs to find boundaries
-                t_pos = pos_map.get(oval_data["top"].lower())
-                b_pos = pos_map.get(oval_data["bot"].lower())
-                
-                if t_pos is not None and b_pos is not None:
-                    # Find exact physical Y coordinates of both lines
-                    m_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * pen_w
-                    m_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * pen_w
+                # Decoupled boundary lookup for both Markers and Ovals
+                try:
+                    t_pos = pos_map[c.oval_data["top"].lower()]
+                    b_pos = pos_map[c.oval_data["bot"].lower()]
                     
-                    mid_y_mm = (m_top_y + m_bot_y) / 2.0
+                    m_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * c.pen_w
+                    m_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * c.pen_w
                     
-                    gap_height = m_bot_y - m_top_y
-                    m_size_mm = (gap_height / 2.0) * 0.6
+                    # Generate dynamic X-marker independently of ovals
+                    if c.show_x_marker:
+                        mid_y_mm = (m_top_y + m_bot_y) / 2.0
+                        gap_height = m_bot_y - m_top_y
+                        m_size_mm = (gap_height / 2.0) * 0.6
+                        marker_x = x_min_clip + m_size_mm + 0.5
+                        rd.markers.append((marker_x, mid_y_mm, m_size_mm))
                     
-                    # Shift dynamically based on its own size (+ 0.5mm padding)
-                    marker_x = x_min_clip + m_size_mm + 0.5 
-                    
-                    # Store x, y AND size
-                    rd.markers.append((marker_x, mid_y_mm, m_size_mm))
+                    # Generate Ovals
+                    if c.oval_data["enabled"]:
+                        o_top_y, o_bot_y = m_top_y, m_bot_y
+                        o_h = o_bot_y - o_top_y
+                        o_w = o_h * c.oval_data["ratio"]
+                    else:
+                        o_w, o_h = None, None
+                        
+                except KeyError:
+                    o_w, o_h = None, None # Skip if lines are invalid
 
-                for ld in lines:
-                    y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
+                for ld in c.lines:
+                    y_line = current_top_y_mm + (max_pw - ld["pos"]) * c.pen_w
                     rd.horizontals.append((y_line, ld["lw"], ld["style"]))
 
                 slant_anchor_x_mm = x_min_clip + 1.0
-                o_top_y, o_bot_y, o_h, o_w = None, None, None, None
-                if oval_data["enabled"]:
-                    t_pos = pos_map.get(oval_data["top"].lower())
-                    b_pos = pos_map.get(oval_data["bot"].lower())
-                    if t_pos is not None and b_pos is not None:
-                        o_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * pen_w
-                        o_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * pen_w
-                        o_h = o_bot_y - o_top_y
-                        o_w = o_h * oval_data["ratio"]
+                base_y_mm = current_top_y_mm + (max_pw - pos_map.get("base", 0)) * c.pen_w
 
-                for s in slants:
+                for s in c.slants:
                     rad = math.radians(s["angle"])
                     spacing = s["spacing"]
                     n_min = math.floor((x_min_clip - slant_anchor_x_mm) / spacing) - 2
@@ -216,56 +223,43 @@ class GeometryEngine:
                             if (cx_o - o_w/2 - abs(shear_offset)) >= x_min_clip and (cx_o + o_w/2 + abs(shear_offset)) <= x_max_clip:
                                 rd.ovals.append((cx_o, cy_o, o_w, o_h, rad, 0.1))
 
-            current_top_y_mm += group_h_mm + gap
+            current_top_y_mm += group_h_mm + c.gap
         return rd
 
 class SvgExporter:
     @staticmethod
-    def generate(rd, json_str="{}"):
+    def generate(rd: RenderData, json_str="{}") -> str:
         pw, ph = rd.page_width, rd.page_height
         svg = []
         
-        # Standard SVG Header
         svg.append(f'<?xml version="1.0" encoding="UTF-8" standalone="no"?>')
         svg.append(f'<svg width="{pw}mm" height="{ph}mm" viewBox="0 0 {pw} {ph}" xmlns="http://www.w3.org/2000/svg">')
-        
-        # === FIX: Embed JSON UI state into the SVG ===
-        # Storing it in a <desc> element ensures it doesn't render but is easy to parse on load.
         svg.append(f'  <desc id="calligraphy-metadata">{json_str}</desc>')
-        
-        # Background
         svg.append(f'  <rect width="{pw}" height="{ph}" fill="none"/>')
 
-        # Map Line Styles
         def get_dash(style):
             if style == "Dashed": return 'stroke-dasharray="2, 1"'
             if style == "Dotted": return 'stroke-dasharray="1, 1"'
             return ''
 
-        # 1. Horizontals
         for y, lw, style in rd.horizontals:
             svg.append(f'  <line x1="{rd.margin_h}" y1="{y}" x2="{pw - rd.margin_h}" y2="{y}" '
                        f'stroke="{rd.line_color}" stroke-width="{lw}" {get_dash(style)}/>')
         
-        # 2. Slants
         for x1, y1, x2, y2, lw, style in rd.slants:
             svg.append(f'  <line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
                        f'stroke="{rd.line_color}" stroke-width="{lw}" {get_dash(style)}/>')
             
-        # 3. Ovals
         for cx, cy, w, h, rad, lw in rd.ovals:
             deg = math.degrees(rad)
             transform = f'transform="translate({cx} {cy}) skewX({-deg}) translate({-cx} {-cy})"'
             svg.append(f'  <ellipse cx="{cx}" cy="{cy}" rx="{w/2}" ry="{h/2}" '
                        f'stroke="{rd.line_color}" stroke-width="{lw}" fill="none" {transform}/>')
             
-        m_size = 1.5  # Size of the cross marker from center in mm
         for mx, my, m_size in rd.markers:
-            # Top-Left to Bottom-Right (\)
             svg.append(f'  <line x1="{mx - m_size}" y1="{my - m_size}" '
                        f'x2="{mx + m_size}" y2="{my + m_size}" '
                        f'stroke="{rd.line_color}" stroke-width="0.5"/>')
-            # Bottom-Left to Top-Right (/)
             svg.append(f'  <line x1="{mx - m_size}" y1="{my + m_size}" '
                        f'x2="{mx + m_size}" y2="{my - m_size}" '
                        f'stroke="{rd.line_color}" stroke-width="0.5"/>')
@@ -280,11 +274,11 @@ class SvgExporter:
 class CalligraphyApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Calligraphy Guide Sheet Generator - Pro")
+        self.title("Calligraphy Guide Sheet Generator")
         self.geometry("1450x950")
         ctk.set_appearance_mode("dark")
         
-        self.backend_state = None
+        self.backend_state: Optional[GridConfig] = None
         self._update_job = None
         self.line_rows = []
         self.slant_rows = []
@@ -298,6 +292,7 @@ class CalligraphyApp(ctk.CTk):
         self._setup_layout()
         self._build_sidebar()
         self._build_canvas()
+        self._bind_numeric_inputs()
         
         self.load_preset("Italic (10°)")
         self.bind("<Configure>", self._on_resize)
@@ -340,11 +335,8 @@ class CalligraphyApp(ctk.CTk):
         self.ent_dot_gap.grid(row=1, column=3, sticky="w", padx=10, pady=10)
 
         ctk.CTkLabel(bg_frame, text="Dot Size (mm):").grid(row=2, column=2, sticky="w", pady=(0, 10))
-        self.ent_dot_size = ctk.CTkEntry(bg_frame, width=50); self.ent_dot_size.insert(0, "0.1")
+        self.ent_dot_size = ctk.CTkEntry(bg_frame, width=50); self.ent_dot_size.insert(0, "0.2")
         self.ent_dot_size.grid(row=2, column=3, sticky="w", padx=10, pady=(0, 10))
-
-        self.ent_dot_gap.bind("<KeyRelease>", self._debounce_update)
-        self.ent_dot_size.bind("<KeyRelease>", self._debounce_update)
 
         ctk.CTkLabel(self.sidebar_frame, text="Page & Layout (mm or in)", font=ctk.CTkFont(weight="bold")).grid(row=r, column=0, padx=20, pady=(10, 0), sticky="w"); r += 1
         frame_page = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -358,9 +350,8 @@ class CalligraphyApp(ctk.CTk):
         self.ent_mv = ctk.CTkEntry(frame_page, width=70); self.ent_mv.insert(0, CONFIG["default_margin_v"]); self.ent_mv.grid(row=1, column=1, sticky="e")
         ctk.CTkLabel(frame_page, text="H Marg:").grid(row=1, column=2, sticky="w", padx=(10,0)); 
         self.ent_mh = ctk.CTkEntry(frame_page, width=70); self.ent_mh.insert(0, CONFIG["default_margin_h"]); self.ent_mh.grid(row=1, column=3, sticky="e")
-        for ent in [self.ent_pw, self.ent_ph, self.ent_mv, self.ent_mh]: ent.bind("<KeyRelease>", self._debounce_update)
-
-        ctk.CTkLabel(self.sidebar_frame, text="Metrics & Ovals", font=ctk.CTkFont(weight="bold")).grid(row=r, column=0, padx=20, pady=(15, 0), sticky="w"); r += 1
+        
+        ctk.CTkLabel(self.sidebar_frame, text="Metrics, Markers & Ovals", font=ctk.CTkFont(weight="bold")).grid(row=r, column=0, padx=20, pady=(15, 0), sticky="w"); r += 1
         frame_metrics = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         frame_metrics.grid(row=r, column=0, padx=20, pady=5, sticky="ew"); r += 1
         
@@ -369,22 +360,26 @@ class CalligraphyApp(ctk.CTk):
         ctk.CTkLabel(frame_metrics, text="Gap:").grid(row=0, column=2, sticky="w", padx=(10,0))
         self.ent_gap = ctk.CTkEntry(frame_metrics, width=70); self.ent_gap.grid(row=0, column=3, sticky="e")
         
+        # Ovals and X-Marker Toggles
         self.chk_oval = ctk.CTkCheckBox(frame_metrics, text="Draw Ovals", command=self._debounce_update)
-        self.chk_oval.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10,0))
-        ctk.CTkLabel(frame_metrics, text="Ratio:").grid(row=1, column=2, sticky="w", padx=(10,0), pady=(10,0))
-        self.ent_oval_ratio = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_ratio.grid(row=1, column=3, sticky="e", pady=(10,0))
-        ctk.CTkLabel(frame_metrics, text="Top Line:").grid(row=2, column=0, sticky="w", pady=(5,0))
-        self.ent_oval_top = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_top.grid(row=2, column=1, sticky="e", pady=(5,0))
-        ctk.CTkLabel(frame_metrics, text="Bot Line:").grid(row=2, column=2, sticky="w", padx=(10,0), pady=(5,0))
-        self.ent_oval_bot = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_bot.grid(row=2, column=3, sticky="e", pady=(5,0))
+        self.chk_oval.grid(row=1, column=0, sticky="w", pady=(10,0))
+        
+        self.chk_x_marker = ctk.CTkCheckBox(frame_metrics, text="Draw X-Mark", command=self._debounce_update)
+        self.chk_x_marker.grid(row=1, column=1, columnspan=2, sticky="w", padx=(5,0), pady=(10,0))
+        self.chk_x_marker.select() # Default Enabled
+        
+        ctk.CTkLabel(frame_metrics, text="Ratio:").grid(row=2, column=0, sticky="w", pady=(10,0))
+        self.ent_oval_ratio = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_ratio.grid(row=2, column=1, sticky="e", pady=(10,0))
+        ctk.CTkLabel(frame_metrics, text="Bound Top:").grid(row=3, column=0, sticky="w", pady=(5,0))
+        self.ent_oval_top = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_top.grid(row=3, column=1, sticky="e", pady=(5,0))
+        ctk.CTkLabel(frame_metrics, text="Bound Bot:").grid(row=3, column=2, sticky="w", padx=(10,0), pady=(5,0))
+        self.ent_oval_bot = ctk.CTkEntry(frame_metrics, width=70); self.ent_oval_bot.grid(row=3, column=3, sticky="e", pady=(5,0))
         
         self.chk_radial = ctk.CTkCheckBox(frame_metrics, text="Envelope Mode (Radial)", command=self._debounce_update)
-        self.chk_radial.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10,0))
-        ctk.CTkLabel(frame_metrics, text="Radius(mm):").grid(row=3, column=2, sticky="w", padx=(10,0), pady=(10,0))
+        self.chk_radial.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
+        ctk.CTkLabel(frame_metrics, text="Radius(mm):").grid(row=4, column=2, sticky="w", padx=(10,0), pady=(10,0))
         self.ent_radius = ctk.CTkEntry(frame_metrics, width=70); self.ent_radius.insert(0, "200")
-        self.ent_radius.grid(row=3, column=3, sticky="e", pady=(10,0))
-
-        for ent in [self.ent_pen, self.ent_gap, self.ent_oval_ratio, self.ent_oval_top, self.ent_oval_bot, self.ent_radius]: ent.bind("<KeyRelease>", self._debounce_update)
+        self.ent_radius.grid(row=4, column=3, sticky="e", pady=(10,0))
 
         ctk.CTkLabel(self.sidebar_frame, text="Horizontal Lines", font=ctk.CTkFont(weight="bold")).grid(row=r, column=0, padx=20, pady=(15, 0), sticky="w"); r += 1
         self.frame_lines_grid = ctk.CTkFrame(self.sidebar_frame, fg_color="#2B2B2B")
@@ -402,6 +397,16 @@ class CalligraphyApp(ctk.CTk):
         ctk.CTkButton(frame_actions, text="💾 Save SVG", command=self.save_svg, fg_color="#1E90FF").grid(row=0, column=0, pady=5, sticky="ew")
         ctk.CTkButton(frame_actions, text="📂 Load SVG", command=self.load_svg, fg_color="#555555").grid(row=1, column=0, pady=5, sticky="ew")
         ctk.CTkButton(frame_actions, text="🖨️ Print", command=self.print_svg, fg_color="#2E8B57").grid(row=2, column=0, pady=(15, 5), sticky="ew")
+
+    def _bind_numeric_inputs(self):
+        """DRY Principle: Bind all numeric input widgets to the update handler."""
+        self.numeric_inputs = [
+            self.ent_pw, self.ent_ph, self.ent_mv, self.ent_mh,
+            self.ent_pen, self.ent_gap, self.ent_dot_gap, self.ent_dot_size,
+            self.ent_oval_ratio, self.ent_oval_top, self.ent_oval_bot, self.ent_radius
+        ]
+        for ent in self.numeric_inputs:
+            ent.bind("<KeyRelease>", self._debounce_update)
 
     def _build_canvas(self):
         self.toolbar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -484,7 +489,7 @@ class CalligraphyApp(ctk.CTk):
     
     def _zoom_math(self, factor, mx, my):
         if not self.backend_state: return
-        pw, ph = self.backend_state[0], self.backend_state[1]
+        pw, ph = self.backend_state.pw, self.backend_state.ph
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         base_scale = min((ch - 40) / ph, (cw - 40) / pw)
         
@@ -498,6 +503,10 @@ class CalligraphyApp(ctk.CTk):
         self.pan_x = (mx - (mx - old_ox) * (new_sc / old_sc)) - (cw - pw * new_sc) / 2
         self.pan_y = (my - (my - old_oy) * (new_sc / old_sc)) - (ch - ph * new_sc) / 2
         self.update_preview()
+
+    def _map_coords(self, x: float, y: float, scale: float, offset_x: float, offset_y: float) -> Tuple[float, float]:
+        """Translates mm coordinates to canvas pixels respecting zoom and pan."""
+        return offset_x + (x * scale), offset_y + (y * scale)
 
     # --- State Management ---
     def _parse_val(self, val_str):
@@ -519,6 +528,7 @@ class CalligraphyApp(ctk.CTk):
             "pen_width": self.ent_pen.get().strip(), "group_gap": self.ent_gap.get().strip(),
             "line_color": self.current_line_color, "dot_color": self.current_dot_color,
             "show_center": self.chk_center.get() == 1,
+            "show_x_marker": self.chk_x_marker.get() == 1,
             "dot_gap": self.ent_dot_gap.get().strip(), "dot_size": self.ent_dot_size.get().strip(),
             "radial": self.chk_radial.get() == 1, "radius": self.ent_radius.get().strip(),
             "oval_enabled": self.chk_oval.get() == 1,
@@ -543,6 +553,8 @@ class CalligraphyApp(ctk.CTk):
                 self.btn_dot_color.configure(text=self.current_dot_color, fg_color=self.current_dot_color)
             if state.get("show_center", False): self.chk_center.select()
             else: self.chk_center.deselect()
+            if state.get("show_x_marker", True): self.chk_x_marker.select()
+            else: self.chk_x_marker.deselect()
             if state.get("radial", False): self.chk_radial.select()
             else: self.chk_radial.deselect()
             set_ent(self.ent_dot_gap, "dot_gap")
@@ -566,7 +578,7 @@ class CalligraphyApp(ctk.CTk):
         
         self.update_preview()
 
-    def _parse_inputs_to_mm(self):
+    def _parse_inputs_to_mm(self) -> Optional[GridConfig]:
         pw, ph = self._parse_val(self.ent_pw.get()), self._parse_val(self.ent_ph.get())
         mv, mh = self._parse_val(self.ent_mv.get()), self._parse_val(self.ent_mh.get())
         pen, gap = self._parse_val(self.ent_pen.get()), self._parse_val(self.ent_gap.get())
@@ -602,7 +614,14 @@ class CalligraphyApp(ctk.CTk):
                     s_data.append({"angle": float(r["angle"].get()), "spacing": spc, "lw": lw, "style": r["style"].get()})
             except ValueError: continue
                     
-        return pw, ph, mv, mh, pen, gap, l_data, s_data, oval_data, self.current_line_color, self.current_dot_color, self.chk_center.get() == 1, dot_gap, dot_size, self.chk_radial.get() == 1, radius
+        return GridConfig(
+            pw, ph, mv, mh, pen, gap, l_data, s_data, oval_data,
+            self.current_line_color, self.current_dot_color,
+            self.chk_center.get() == 1, 
+            self.chk_x_marker.get() == 1,
+            dot_gap, dot_size,
+            self.chk_radial.get() == 1, radius
+        )
 
     # --- Live Preview Engine ---
     def _debounce_update(self, event=None):
@@ -617,20 +636,20 @@ class CalligraphyApp(ctk.CTk):
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         if cw <= 1 or ch <= 1: return
             
-        parsed = self._parse_inputs_to_mm()
-        if not parsed: return
-        self.backend_state = parsed
+        self.backend_state = self._parse_inputs_to_mm()
+        if not self.backend_state: return
 
-        rd = GeometryEngine.calculate(*self.backend_state)
+        rd = GeometryEngine.calculate(self.backend_state)
+        
         base_sc = min((ch - 40) / rd.page_height, (cw - 40) / rd.page_width)
         sc = base_sc * self.zoom_level
         ox = (cw - (rd.page_width * sc)) / 2 + self.pan_x
         oy = (ch - (rd.page_height * sc)) / 2 + self.pan_y
         
-        def map_c(x, y): return ox + (x * sc), oy + (y * sc)
-
-        p_x1, p_y1 = map_c(0, 0); p_x2, p_y2 = map_c(rd.page_width, rd.page_height)
-        m_x1, m_y1 = map_c(0, rd.margin_v); m_x2, m_y2 = map_c(0, rd.page_height - rd.margin_v)
+        p_x1, p_y1 = self._map_coords(0, 0, sc, ox, oy)
+        p_x2, p_y2 = self._map_coords(rd.page_width, rd.page_height, sc, ox, oy)
+        m_x1, m_y1 = self._map_coords(0, rd.margin_v, sc, ox, oy)
+        m_x2, m_y2 = self._map_coords(0, rd.page_height - rd.margin_v, sc, ox, oy)
         
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill=CONFIG["page_color"], outline="")
         
@@ -642,11 +661,11 @@ class CalligraphyApp(ctk.CTk):
                 for j in range(ny + 1):
                     x = rd.margin_h + i * rd.dot_gap
                     y = rd.margin_v + j * rd.dot_gap
-                    mx, my = map_c(x, y)
+                    mx, my = self._map_coords(x, y, sc, ox, oy)
                     self.canvas.create_oval(mx-r_px, my-r_px, mx+r_px, my+r_px, fill=rd.dot_color, outline="")
 
         if rd.show_center:
-            mx, _ = map_c(rd.page_width/2, 0)
+            mx, _ = self._map_coords(rd.page_width/2, 0, sc, ox, oy)
             self.canvas.create_line(mx, m_y1, mx, m_y2, fill=rd.line_color, dash=(4, 4))
 
         for (cx, cy, r, lw, style) in rd.arcs:
@@ -662,7 +681,7 @@ class CalligraphyApp(ctk.CTk):
                 dx = px - cx
                 if abs(dx) <= r:
                     py = cy - math.sqrt(r**2 - dx**2)
-                    points.extend(map_c(px, py))
+                    points.extend(self._map_coords(px, py, sc, ox, oy))
             self.canvas.create_line(points, fill=rd.line_color, width=cw_lw, dash=tk_dash)
 
         for (cx, cy, w, h, rad, lw) in rd.ovals:
@@ -674,35 +693,36 @@ class CalligraphyApp(ctk.CTk):
                 py = (h/2) * math.sin(t)
                 sx = cx + px - py * math.tan(rad) 
                 sy = cy + py
-                pts.extend(map_c(sx, sy))
+                pts.extend(self._map_coords(sx, sy, sc, ox, oy))
             self.canvas.create_polygon(pts, fill="", outline=rd.line_color, width=max(1, lw*sc), smooth=True)
 
         for (x1, y1, x2, y2, lw, style) in rd.slants:
             cw_lw = max(1, lw * sc)
             tk_dash = tuple(max(1, int((d * sc) / cw_lw)) for d in CONFIG["style_map_ui"].get(style, ())) if style != "Solid" else ()
-            self.canvas.create_line(*map_c(x1, y1), *map_c(x2, y2), fill=rd.line_color, width=cw_lw, dash=tk_dash)
+            p1 = self._map_coords(x1, y1, sc, ox, oy)
+            p2 = self._map_coords(x2, y2, sc, ox, oy)
+            self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=rd.line_color, width=cw_lw, dash=tk_dash)
 
         for (y, lw, style) in rd.horizontals:
             cw_lw = max(1, lw * sc)
             tk_dash = tuple(max(1, int((d * sc) / cw_lw)) for d in CONFIG["style_map_ui"].get(style, ())) if style != "Solid" else ()
-            self.canvas.create_line(*map_c(rd.margin_h, y), *map_c(rd.page_width - rd.margin_h, y), fill=rd.line_color, dash=tk_dash, width=cw_lw)
+            p1 = self._map_coords(rd.margin_h, y, sc, ox, oy)
+            p2 = self._map_coords(rd.page_width - rd.margin_h, y, sc, ox, oy)
+            self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=rd.line_color, dash=tk_dash, width=cw_lw)
 
-        m_size_mm = 1.5  # Exact size used in SVG
-        m_size_px = m_size_mm * sc 
-        
-        marker_lw = max(1, int(0.5 * sc)) # Matching 0.5mm SVG stroke width
-        
+        # Dynamic X-Markers
+        marker_lw = max(1, int(0.5 * sc)) 
         for mx_mm, my_mm, m_size_mm in rd.markers:
             m_size_px = m_size_mm * sc 
-            cx, cy = map_c(mx_mm, my_mm)
+            cx_px, cy_px = self._map_coords(mx_mm, my_mm, sc, ox, oy)
             
             # Diagonal (\)
-            self.canvas.create_line(cx - m_size_px, cy - m_size_px, 
-                                    cx + m_size_px, cy + m_size_px, 
+            self.canvas.create_line(cx_px - m_size_px, cy_px - m_size_px, 
+                                    cx_px + m_size_px, cy_px + m_size_px, 
                                     fill=rd.line_color, width=marker_lw)
             # Diagonal (/)
-            self.canvas.create_line(cx - m_size_px, cy + m_size_px, 
-                                    cx + m_size_px, cy - m_size_px, 
+            self.canvas.create_line(cx_px - m_size_px, cy_px + m_size_px, 
+                                    cx_px + m_size_px, cy_px - m_size_px, 
                                     fill=rd.line_color, width=marker_lw)
 
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill="", outline="#888888")
@@ -713,9 +733,9 @@ class CalligraphyApp(ctk.CTk):
 
     # --- IO & Printing ---
     def save_svg(self):
-        parsed = self._parse_inputs_to_mm()
-        if not parsed: return messagebox.showerror("Error", "Invalid parameters.")
-        rd = GeometryEngine.calculate(*parsed)
+        config = self._parse_inputs_to_mm()
+        if not config: return messagebox.showerror("Error", "Invalid parameters.")
+        rd = GeometryEngine.calculate(config)
         filepath = filedialog.asksaveasfilename(defaultextension=".svg", filetypes=[("SVG Vector", "*.svg")])
         if filepath:
             with open(filepath, 'w', encoding="utf-8") as f: f.write(SvgExporter.generate(rd, json.dumps(self._get_ui_state())))
@@ -727,26 +747,22 @@ class CalligraphyApp(ctk.CTk):
             try:
                 with open(filepath, 'r', encoding="utf-8", errors="ignore") as f: content = f.read()
                 
-                start_tag = '<desc id="calligraphy-metadata">'
-                end_tag = '</desc>'
-                start_idx = content.find(start_tag)
+                # Robust Regex JSON extraction
+                match = re.search(r'<desc id="calligraphy-metadata">(.*?)</desc>', content, re.DOTALL)
                 
-                if start_idx != -1:
-                    start_idx += len(start_tag)
-                    end_idx = content.find(end_tag, start_idx)
-                    if end_idx != -1:
-                        json_str = content[start_idx:end_idx].strip()
-                        self._set_ui_state(json.loads(json_str))
-                        return
+                if match:
+                    json_str = match.group(1).strip()
+                    self._set_ui_state(json.loads(json_str))
+                    return
                         
                 messagebox.showwarning("Warning", "No readable metadata found in this file.")
             except Exception as e:
                 messagebox.showerror("Parse Error", f"Failed to load file state.\n{e}")
 
     def print_svg(self):
-        parsed = self._parse_inputs_to_mm()
-        if not parsed: return messagebox.showerror("Error", "Invalid parameters.")
-        rd = GeometryEngine.calculate(*parsed)
+        config = self._parse_inputs_to_mm()
+        if not config: return messagebox.showerror("Error", "Invalid parameters.")
+        rd = GeometryEngine.calculate(config)
         
         temp_svg = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp.svg")
         temp_pdf = os.path.join(os.environ.get("TEMP", "."), "calligraphy_temp.pdf")
@@ -767,22 +783,26 @@ class CalligraphyApp(ctk.CTk):
 
         try:
             subprocess.run([inkscape_cmd, "--export-filename=" + temp_pdf, temp_svg], check=True, capture_output=True)
+            
+            # Silent print via SumatraPDF if available, otherwise OS default fallback
+            sumatra_path = r".\SumatraPDF-3.6.1-64.exe"
+            try:
+                if os.path.exists(sumatra_path):
+                    subprocess.run([sumatra_path, "-print-to-default", "-silent", temp_pdf], check=True)
+                else:
+                    os.startfile(temp_pdf, "print")
+            except OSError as e:
+                # WinError 1155 fallback
+                if getattr(e, 'winerror', None) == 1155:
+                    messagebox.showinfo("Manual Print", "No default PDF printer associated. Opening the file to print manually.")
+                    os.startfile(temp_pdf)
+                else:
+                    print(f"Printing failed: {e}")
+
         except FileNotFoundError:
             messagebox.showerror("Dependency Error", "Inkscape not found. Please verify your Inkscape installation or use 'Save SVG' and print manually.")
         except subprocess.CalledProcessError as e: 
             messagebox.showerror("Print Cancelled", f"Conversion process failed.\n{e.stderr.decode('utf-8') if e.stderr else e}")
-
-        sumatra_path = r".\SumatraPDF-3.6.1-64.exe"
-        try:
-            if os.path.exists(sumatra_path):
-                # -print-to-default prints silently to the default OS printer
-                # -silent prevents UI from flashing
-                subprocess.run([sumatra_path, "-print-to-default", "-silent", temp_pdf], check=True)
-            else:
-                # Fallback if Sumatra isn't found
-                os.startfile(temp_pdf)
-        except Exception as e:
-            print(f"Printing failed: {e}")
 
 
 if __name__ == "__main__":
