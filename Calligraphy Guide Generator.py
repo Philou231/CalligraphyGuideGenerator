@@ -147,13 +147,25 @@ class GeometryEngine:
                             rd.slants.append((p1_x, y_min, p2_x, y_max, s["lw"], s["style"]))
 
             else:
-                if xh_pos is not None:
-                    xh_y_mm = current_top_y_mm + (max_pw - xh_pos) * pen_w
-                    mid_y_mm = (base_y_mm + xh_y_mm) / 2.0
+                # Use the "Top Line" and "Bot Line" UI inputs to find boundaries
+                t_pos = pos_map.get(oval_data["top"].lower())
+                b_pos = pos_map.get(oval_data["bot"].lower())
+                
+                if t_pos is not None and b_pos is not None:
+                    # Find exact physical Y coordinates of both lines
+                    m_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * pen_w
+                    m_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * pen_w
                     
-                    # Shift marker entirely inside the writing area (1.5mm radius + 0.5mm pad)
-                    marker_x = x_min_clip + 2.0 
-                    rd.markers.append((marker_x, mid_y_mm))
+                    mid_y_mm = (m_top_y + m_bot_y) / 2.0
+                    
+                    gap_height = m_bot_y - m_top_y
+                    m_size_mm = (gap_height / 2.0) * 0.6
+                    
+                    # Shift dynamically based on its own size (+ 0.5mm padding)
+                    marker_x = x_min_clip + m_size_mm + 0.5 
+                    
+                    # Store x, y AND size
+                    rd.markers.append((marker_x, mid_y_mm, m_size_mm))
 
                 for ld in lines:
                     y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
@@ -248,7 +260,7 @@ class SvgExporter:
                        f'stroke="{rd.line_color}" stroke-width="{lw}" fill="none" {transform}/>')
             
         m_size = 1.5  # Size of the cross marker from center in mm
-        for mx, my in rd.markers:
+        for mx, my, m_size in rd.markers:
             # Top-Left to Bottom-Right (\)
             svg.append(f'  <line x1="{mx - m_size}" y1="{my - m_size}" '
                        f'x2="{mx + m_size}" y2="{my + m_size}" '
@@ -328,7 +340,7 @@ class CalligraphyApp(ctk.CTk):
         self.ent_dot_gap.grid(row=1, column=3, sticky="w", padx=10, pady=10)
 
         ctk.CTkLabel(bg_frame, text="Dot Size (mm):").grid(row=2, column=2, sticky="w", pady=(0, 10))
-        self.ent_dot_size = ctk.CTkEntry(bg_frame, width=50); self.ent_dot_size.insert(0, "0.2")
+        self.ent_dot_size = ctk.CTkEntry(bg_frame, width=50); self.ent_dot_size.insert(0, "0.1")
         self.ent_dot_size.grid(row=2, column=3, sticky="w", padx=10, pady=(0, 10))
 
         self.ent_dot_gap.bind("<KeyRelease>", self._debounce_update)
@@ -678,10 +690,10 @@ class CalligraphyApp(ctk.CTk):
         m_size_mm = 1.5  # Exact size used in SVG
         m_size_px = m_size_mm * sc 
         
-        # Calculate matching line thickness: 0.5mm scaled, minimum 1 pixel
-        marker_lw = max(1, int(0.5 * sc)) 
+        marker_lw = max(1, int(0.5 * sc)) # Matching 0.5mm SVG stroke width
         
-        for mx_mm, my_mm in rd.markers:
+        for mx_mm, my_mm, m_size_mm in rd.markers:
+            m_size_px = m_size_mm * sc 
             cx, cy = map_c(mx_mm, my_mm)
             
             # Diagonal (\)
