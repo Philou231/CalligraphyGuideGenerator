@@ -149,12 +149,11 @@ class GeometryEngine:
             else:
                 if xh_pos is not None:
                     xh_y_mm = current_top_y_mm + (max_pw - xh_pos) * pen_w
-                    # Left margin marker
-                    rd.markers.append((x_min_clip, xh_y_mm))
-                    rd.markers.append((x_min_clip, base_y_mm))
-                    # Optional: Right margin marker
-                    rd.markers.append((x_max_clip, xh_y_mm))
-                    rd.markers.append((x_max_clip, base_y_mm))
+                    mid_y_mm = (base_y_mm + xh_y_mm) / 2.0
+                    
+                    # Shift marker entirely inside the writing area (1.5mm radius + 0.5mm pad)
+                    marker_x = x_min_clip + 2.0 
+                    rd.markers.append((marker_x, mid_y_mm))
 
                 for ld in lines:
                     y_line = current_top_y_mm + (max_pw - ld["pos"]) * pen_w
@@ -248,15 +247,16 @@ class SvgExporter:
             svg.append(f'  <ellipse cx="{cx}" cy="{cy}" rx="{w/2}" ry="{h/2}" '
                        f'stroke="{rd.line_color}" stroke-width="{lw}" fill="none" {transform}/>')
             
-        # === FIX: Render the X-Height Cross Markers ===
-        m_size = 1.5  # Size of the cross marker in mm
+        m_size = 1.5  # Size of the cross marker from center in mm
         for mx, my in rd.markers:
-            # Horizontal stroke of the cross
-            svg.append(f'  <line x1="{mx - m_size}" y1="{my}" x2="{mx + m_size}" y2="{my}" '
-                       f'stroke="{rd.line_color}" stroke-width="0.3"/>')
-            # Vertical stroke of the cross
-            svg.append(f'  <line x1="{mx}" y1="{my - m_size}" x2="{mx}" y2="{my + m_size}" '
-                       f'stroke="{rd.line_color}" stroke-width="0.3"/>')
+            # Top-Left to Bottom-Right (\)
+            svg.append(f'  <line x1="{mx - m_size}" y1="{my - m_size}" '
+                       f'x2="{mx + m_size}" y2="{my + m_size}" '
+                       f'stroke="{rd.line_color}" stroke-width="0.5"/>')
+            # Bottom-Left to Top-Right (/)
+            svg.append(f'  <line x1="{mx - m_size}" y1="{my + m_size}" '
+                       f'x2="{mx + m_size}" y2="{my - m_size}" '
+                       f'stroke="{rd.line_color}" stroke-width="0.5"/>')
             
         svg.append('</svg>')
         return "\n".join(svg)
@@ -674,6 +674,24 @@ class CalligraphyApp(ctk.CTk):
             cw_lw = max(1, lw * sc)
             tk_dash = tuple(max(1, int((d * sc) / cw_lw)) for d in CONFIG["style_map_ui"].get(style, ())) if style != "Solid" else ()
             self.canvas.create_line(*map_c(rd.margin_h, y), *map_c(rd.page_width - rd.margin_h, y), fill=rd.line_color, dash=tk_dash, width=cw_lw)
+
+        m_size_mm = 1.5  # Exact size used in SVG
+        m_size_px = m_size_mm * sc 
+        
+        # Calculate matching line thickness: 0.5mm scaled, minimum 1 pixel
+        marker_lw = max(1, int(0.5 * sc)) 
+        
+        for mx_mm, my_mm in rd.markers:
+            cx, cy = map_c(mx_mm, my_mm)
+            
+            # Diagonal (\)
+            self.canvas.create_line(cx - m_size_px, cy - m_size_px, 
+                                    cx + m_size_px, cy + m_size_px, 
+                                    fill=rd.line_color, width=marker_lw)
+            # Diagonal (/)
+            self.canvas.create_line(cx - m_size_px, cy + m_size_px, 
+                                    cx + m_size_px, cy - m_size_px, 
+                                    fill=rd.line_color, width=marker_lw)
 
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill="", outline="#888888")
         self.canvas.create_rectangle(0, 0, cw, p_y1, fill=CONFIG["bg_color"], outline="") 
