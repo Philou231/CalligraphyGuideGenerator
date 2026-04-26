@@ -122,9 +122,6 @@ class GeometryEngine:
         group_h_mm = (max_pw - min_pw) * c.pen_w
         
         pos_map = {ld["name"].lower(): ld["pos"] for ld in c.lines}
-        
-        cx = c.pw / 2
-        cy = c.ph + c.radius if c.radial else 0
 
         current_top_y_mm = c.mv
         while current_top_y_mm + group_h_mm <= c.ph - c.mv:
@@ -135,27 +132,102 @@ class GeometryEngine:
             x_max_clip = c.pw - c.mh
             
             if c.radial:
+                # ==========================================
+                # 1. RADIUS ANCHORING
+                # ==========================================
+                # Anchor user's Radius input strictly to the 'Base' line.
+                base_pos = pos_map.get("base", 0)
+                y_base = current_top_y_mm + (max_pw - base_pos) * c.pen_w
+        
+                cx = c.pw / 2
+                cy = y_base + c.radius
+                
+                # Bounding radii for this specific group (used later for precise slant intersections)
+                r_top_bound = cy - current_top_y_mm
+                r_bot_bound = cy - (current_top_y_mm + group_h_mm)
+                
                 for ld in c.lines:
                     y_line = current_top_y_mm + (max_pw - ld["pos"]) * c.pen_w
                     r = cy - y_line
                     rd.arcs.append((cx, cy, r, ld["lw"], ld["style"]))
                 
-                for s in c.slants:
-                    rad = math.radians(s["angle"])
-                    spacing_deg = (s["spacing"] / c.radius) * (180 / math.pi)
-                    n_lines = int((c.pw - 2*c.mh) / s["spacing"]) + 2
-                    start_angle = - (n_lines/2) * spacing_deg
-                    
-                    for n in range(n_lines):
-                        current_angle = math.radians(start_angle + n * spacing_deg) + rad
-                        p1_x = cx + (cy - y_min) * math.tan(current_angle)
-                        p2_x = cx + (cy - y_max) * math.tan(current_angle)
+                # ==========================================
+                # 3. MISSING X-MARKS (RADIAL)
+                # ==========================================
+                if c.show_x_marker:
+                    try:
+                        t_pos = pos_map[c.oval_data["top"].lower()]
+                        b_pos = pos_map[c.oval_data["bot"].lower()]
                         
-                        if min(p1_x, p2_x) < x_max_clip and max(p1_x, p2_x) > x_min_clip:
-                            rd.slants.append((p1_x, y_min, p2_x, y_max, s["lw"], s["style"]))
+                        r_top_mark = cy - (current_top_y_mm + (max_pw - max(t_pos, b_pos)) * c.pen_w)
+                        r_bot_mark = cy - (current_top_y_mm + (max_pw - min(t_pos, b_pos)) * c.pen_w)
+                        
+                        r_mid = (r_top_mark + r_bot_mark) / 2.0
+                        gap_height = abs(r_top_mark - r_bot_mark)
+                        m_size = (gap_height / 2.0) * 0.8
+                        
+                        mx = x_min_clip + m_size + 0.5
+                        dx = mx - cx
+                        
+                        # Calculate angular position on the arc so it sits perfectly on the margin
+                        if abs(dx) <= r_mid:
+                            angle = math.asin(dx / r_mid)
+                            my = cy - r_mid * math.cos(angle)
+                            # Passing rotation angle ensures the 'X' rotates perpendicular to the arc curvature
+                            rd.markers.append((mx, my, m_size, angle))
+                    except KeyError:
+                        pass
+
+                # ==========================================
+                # 2. SLANT LINE COVERAGE
+                # ==========================================
+                for s in c.slants:
+                    alpha = math.radians(s["angle"])
+                    spacing_mm = s["spacing"]
+                    
+                    # Convert straight horizontal spacing into polar arc spacing along the Base Radius
+                    d_phi = spacing_mm / c.radius
+                    max_phi = c.pw / c.radius + 0.5
+                    n_lines = int(max_phi / d_phi) + 2
+                    
+                    for i in range(-n_lines, n_lines + 1):
+                        phi = i * d_phi
+                        x_base = cx + c.radius * math.sin(phi)
+                        y_base = cy - c.radius * math.cos(phi)
+                        
+                        # Optimization: cull slants totally off-page
+                        if x_base < x_min_clip - 50 or x_base > x_max_clip + 50:
+                            continue
+                        
+                        # Find intersection 't' distances along parametric slant line
+                        # Project slants perfectly between uppermost and lowermost radii of this group.
+                        disc_top = r_top_bound**2 - (c.radius * math.sin(alpha))**2
+                        disc_bot = r_bot_bound**2 - (c.radius * math.sin(alpha))**2
+                        
+                        if disc_top < 0 or disc_bot < 0:
+                            continue  # Slant angle too extreme to intersect bounds
+                            
+                        t_top = -c.radius * math.cos(alpha) + math.sqrt(disc_top)
+                        t_bot = -c.radius * math.cos(alpha) + math.sqrt(disc_bot)
+                        
+                        p1_x = x_base + t_top * math.sin(phi + alpha)
+                        p1_y = y_base - t_top * math.cos(phi + alpha)
+                        
+                        p2_x = x_base + t_bot * math.sin(phi + alpha)
+                        p2_y = y_base - t_bot * math.cos(phi + alpha)
+                        
+                        if max(p1_x, p2_x) >= x_min_clip and min(p1_x, p2_x) <= x_max_clip:
+                            rd.slants.append((p1_x, p1_y, p2_x, p2_y, s["lw"], s["style"]))
+                            
+                # ==========================================
+                # 4. OVALS [Graceful Degradation]
+                # ==========================================
+                # True radial ovals require complex non-linear polar warping (bezier curves mapped to polar space).
+                # Drawing standard Cartesian ellipses on a curved baseline produces visually broken/tilted results.
+                # Therefore, we gracefully skip oval generation here to preserve the mathematical integrity of the sheet.
 
             else:
-                # Decoupled boundary lookup for both Markers and Ovals
+                # --- Standard Linear Mode ---
                 try:
                     t_pos = pos_map[c.oval_data["top"].lower()]
                     b_pos = pos_map[c.oval_data["bot"].lower()]
@@ -163,13 +235,13 @@ class GeometryEngine:
                     m_top_y = current_top_y_mm + (max_pw - max(t_pos, b_pos)) * c.pen_w
                     m_bot_y = current_top_y_mm + (max_pw - min(t_pos, b_pos)) * c.pen_w
                     
-                    # Generate dynamic X-marker independently of ovals
+                    # Generate dynamic X-marker
                     if c.show_x_marker:
                         mid_y_mm = (m_top_y + m_bot_y) / 2.0
                         gap_height = m_bot_y - m_top_y
                         m_size_mm = (gap_height / 2.0) * 0.6
                         marker_x = x_min_clip + m_size_mm + 0.5
-                        rd.markers.append((marker_x, mid_y_mm, m_size_mm))
+                        rd.markers.append((marker_x, mid_y_mm, m_size_mm, 0.0))
                     
                     # Generate Ovals
                     if c.oval_data["enabled"]:
@@ -250,19 +322,33 @@ class SvgExporter:
             svg.append(f'  <line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
                        f'stroke="{rd.line_color}" stroke-width="{lw}" {get_dash(style)}/>')
             
+        for cx, cy, r, lw, style in rd.arcs:
+            dx_clip = (pw/2 - rd.margin_h)
+            if dx_clip > r: dx_clip = r
+            ang = math.asin(dx_clip / r)
+            x1 = cx - r * math.sin(ang)
+            x2 = cx + r * math.sin(ang)
+            y_arc = cy - r * math.cos(ang)
+            # Uses SVG Arc Path (A): rx ry x-axis-rotation large-arc-flag sweep-flag x y
+            svg.append(f'  <path d="M {x1} {y_arc} A {r} {r} 0 0 1 {x2} {y_arc}" '
+                       f'fill="none" stroke="{rd.line_color}" stroke-width="{lw}" {get_dash(style)}/>')
+
         for cx, cy, w, h, rad, lw in rd.ovals:
             deg = math.degrees(rad)
             transform = f'transform="translate({cx} {cy}) skewX({-deg}) translate({-cx} {-cy})"'
             svg.append(f'  <ellipse cx="{cx}" cy="{cy}" rx="{w/2}" ry="{h/2}" '
                        f'stroke="{rd.line_color}" stroke-width="{lw}" fill="none" {transform}/>')
             
-        for mx, my, m_size in rd.markers:
-            svg.append(f'  <line x1="{mx - m_size}" y1="{my - m_size}" '
+        for mx, my, m_size, angle in rd.markers:
+            deg = math.degrees(angle)
+            svg.append(f'  <g transform="rotate({deg} {mx} {my})">')
+            svg.append(f'    <line x1="{mx - m_size}" y1="{my - m_size}" '
                        f'x2="{mx + m_size}" y2="{my + m_size}" '
                        f'stroke="{rd.line_color}" stroke-width="0.5"/>')
-            svg.append(f'  <line x1="{mx - m_size}" y1="{my + m_size}" '
+            svg.append(f'    <line x1="{mx - m_size}" y1="{my + m_size}" '
                        f'x2="{mx + m_size}" y2="{my - m_size}" '
                        f'stroke="{rd.line_color}" stroke-width="0.5"/>')
+            svg.append(f'  </g>')
             
         svg.append('</svg>')
         return "\n".join(svg)
@@ -668,21 +754,28 @@ class CalligraphyApp(ctk.CTk):
             mx, _ = self._map_coords(rd.page_width/2, 0, sc, ox, oy)
             self.canvas.create_line(mx, m_y1, mx, m_y2, fill=rd.line_color, dash=(4, 4))
 
+        # Render Radial Arcs via robust polyline to avoid Tkinter create_arc bounding box quirks
         for (cx, cy, r, lw, style) in rd.arcs:
             cw_lw = max(1, lw * sc)
             tk_dash = tuple(max(1, int((d * sc) / cw_lw)) for d in CONFIG["style_map_ui"].get(style, ())) if style != "Solid" else ()
             
             points = []
-            x_start = rd.margin_h
-            x_end = rd.page_width - rd.margin_h
-            steps = 40
+            x_start = max(cx - r, rd.margin_h)
+            x_end = min(cx + r, rd.page_width - rd.margin_h)
+            
+            if x_start >= x_end: continue
+                
+            steps = 60
             for i in range(steps + 1):
                 px = x_start + (x_end - x_start) * (i / steps)
                 dx = px - cx
-                if abs(dx) <= r:
-                    py = cy - math.sqrt(r**2 - dx**2)
-                    points.extend(self._map_coords(px, py, sc, ox, oy))
-            self.canvas.create_line(points, fill=rd.line_color, width=cw_lw, dash=tk_dash)
+                # floating point safe ceiling
+                if abs(dx) > r: dx = r if dx > 0 else -r
+                py = cy - math.sqrt(r**2 - dx**2)
+                points.extend(self._map_coords(px, py, sc, ox, oy))
+                
+            if len(points) >= 4:
+                self.canvas.create_line(points, fill=rd.line_color, width=cw_lw, dash=tk_dash)
 
         for (cx, cy, w, h, rad, lw) in rd.ovals:
             pts = []
@@ -710,19 +803,28 @@ class CalligraphyApp(ctk.CTk):
             p2 = self._map_coords(rd.page_width - rd.margin_h, y, sc, ox, oy)
             self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=rd.line_color, dash=tk_dash, width=cw_lw)
 
-        # Dynamic X-Markers
+        # Dynamic Rotatable X-Markers
         marker_lw = max(1, int(0.5 * sc)) 
-        for mx_mm, my_mm, m_size_mm in rd.markers:
+        for mx_mm, my_mm, m_size_mm, angle in rd.markers:
             m_size_px = m_size_mm * sc 
             cx_px, cy_px = self._map_coords(mx_mm, my_mm, sc, ox, oy)
             
-            # Diagonal (\)
-            self.canvas.create_line(cx_px - m_size_px, cy_px - m_size_px, 
-                                    cx_px + m_size_px, cy_px + m_size_px, 
+            s_ang = math.sin(angle)
+            c_ang = math.cos(angle)
+            
+            def rot(px, py):
+                return px * c_ang - py * s_ang, px * s_ang + py * c_ang
+                
+            p1x, p1y = rot(-m_size_px, -m_size_px)
+            p2x, p2y = rot(m_size_px, m_size_px)
+            p3x, p3y = rot(-m_size_px, m_size_px)
+            p4x, p4y = rot(m_size_px, -m_size_px)
+            
+            self.canvas.create_line(cx_px + p1x, cy_px + p1y, 
+                                    cx_px + p2x, cy_px + p2y, 
                                     fill=rd.line_color, width=marker_lw)
-            # Diagonal (/)
-            self.canvas.create_line(cx_px - m_size_px, cy_px + m_size_px, 
-                                    cx_px + m_size_px, cy_px - m_size_px, 
+            self.canvas.create_line(cx_px + p3x, cy_px + p3y, 
+                                    cx_px + p4x, cy_px + p4y, 
                                     fill=rd.line_color, width=marker_lw)
 
         self.canvas.create_rectangle(p_x1, p_y1, p_x2, p_y2, fill="", outline="#888888")
@@ -746,8 +848,6 @@ class CalligraphyApp(ctk.CTk):
         if filepath:
             try:
                 with open(filepath, 'r', encoding="utf-8", errors="ignore") as f: content = f.read()
-                
-                # Robust Regex JSON extraction
                 match = re.search(r'<desc id="calligraphy-metadata">(.*?)</desc>', content, re.DOTALL)
                 
                 if match:
@@ -784,7 +884,6 @@ class CalligraphyApp(ctk.CTk):
         try:
             subprocess.run([inkscape_cmd, "--export-filename=" + temp_pdf, temp_svg], check=True, capture_output=True)
             
-            # Silent print via SumatraPDF if available, otherwise OS default fallback
             sumatra_path = r".\SumatraPDF-3.6.1-64.exe"
             try:
                 if os.path.exists(sumatra_path):
@@ -792,7 +891,6 @@ class CalligraphyApp(ctk.CTk):
                 else:
                     os.startfile(temp_pdf, "print")
             except OSError as e:
-                # WinError 1155 fallback
                 if getattr(e, 'winerror', None) == 1155:
                     messagebox.showinfo("Manual Print", "No default PDF printer associated. Opening the file to print manually.")
                     os.startfile(temp_pdf)
