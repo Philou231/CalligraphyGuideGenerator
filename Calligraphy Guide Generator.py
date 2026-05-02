@@ -48,7 +48,7 @@ PRESETS = {
             {"name": "Base", "pos": "0", "lw": "0.30", "style": "Solid"},
             {"name": "Descender", "pos": "-5", "lw": "0.10", "style": "Solid"}
         ],
-        "slants": [{"angle": "10", "spacing": "2.5 mm", "lw": "0.10", "style": "Dotted"}],
+        "slants": [{"angle": "10", "spacing": "3.4 mm", "lw": "0.10", "style": "Dotted"}],
         "oval_enabled": False, "oval_top": "X-Height", "oval_bot": "Base", "oval_ratio": "0.4"
     },
     "Copperplate (55°)": {
